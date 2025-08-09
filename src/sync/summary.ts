@@ -13,6 +13,7 @@ export interface EntitySummaryBase {
   reachedOld?: boolean;
   stoppedReason?: string;
   unpaged?: boolean;
+  fullRefresh?: boolean; // indicates run included a scheduled full refresh traversal for incremental entities
   ms: number;
 }
 
@@ -28,6 +29,8 @@ export interface SyncSummary {
 let lastSummary: SyncSummary | null = null;
 let inProgress = false;
 let progressStart = 0;
+let nextCronTs: number | null = null; // wall-clock timestamp (ms) of next scheduled cron run
+let nextFullRefreshTs: number | null = null; // expected next full refresh time
 
 export function markSyncStart() {
   inProgress = true;
@@ -40,5 +43,8 @@ export function setLastSummary(summary: SyncSummary) {
 }
 
 export function getLastSummary() {
-  return { lastSummary, inProgress, startedAt: progressStart };
+  return { lastSummary, inProgress, startedAt: progressStart, nextCronTs, nextFullRefreshTs };
 }
+
+export function setNextCron(ts: number) { nextCronTs = ts; }
+export function setNextFullRefresh(ts: number) { nextFullRefreshTs = ts; }

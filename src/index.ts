@@ -5,8 +5,9 @@ import { runSync } from './sync/run.js';
 import cron from 'node-cron';
 import { config } from './config.js';
 import { startMetricsServer } from './server/metrics.js';
-import { getLastSummary } from './sync/summary.js';
+import { getLastSummary, setNextCron, setNextFullRefresh } from './sync/summary.js';
 import { noteRun } from './server/metrics.js';
+import { getState, setState } from './sync/state.js';
 
 async function bootstrap() {
     try {
@@ -32,7 +33,7 @@ async function bootstrap() {
         if (config.flags.cronEnabled) {
             // Schedule hourly, no overlapping thanks to mutex in run
             let running = false;
-            cron.schedule(config.cron, async () => {
+            const schedule = cron.schedule(config.cron, async () => {
                 if (running) {
                     logger.warn('Previous run still in progress; skipping this tick');
                     return;
@@ -42,10 +43,40 @@ async function bootstrap() {
                     await runSync();
                     const { lastSummary } = getLastSummary();
                     if (lastSummary) noteRun(lastSummary.success, lastSummary.durationMs);
+                    // After run, compute next cron timestamp
+                    try {
+                        const parserMod: any = await import('cron-parser');
+                        const parseExpression = parserMod.parseExpression || (parserMod.default && parserMod.default.parseExpression);
+                        if (parseExpression) {
+                            const it = parseExpression(config.cron, { currentDate: new Date() });
+                            setNextCron(it.next().getTime());
+                        } else {
+                            logger.warn('cron-parser parseExpression not found');
+                        }
+                    } catch(e) { logger.warn({ err: e as any }, 'Failed to compute next cron ts'); }
+                    // Update next full refresh target based on last full refresh state
+                    const fullRefreshHours = config.flags.fullRefreshHours || 24;
+                    const lastFull = (await getState<number>('incremental:lastFullRefreshTs')) || 0;
+                    const target = lastFull ? (lastFull + fullRefreshHours*3600_000) : Date.now();
+                    setNextFullRefresh(target);
                 } finally {
                     running = false;
                 }
             });
+            // initial next cron prediction
+            try {
+                const parserMod: any = await import('cron-parser');
+                const parseExpression = parserMod.parseExpression || (parserMod.default && parserMod.default.parseExpression);
+                if (parseExpression) {
+                    const it = parseExpression(config.cron, { currentDate: new Date() });
+                    setNextCron(it.next().getTime());
+                }
+            } catch(e) { logger.warn({ err: e as any }, 'Initial next cron compute failed'); }
+            // initial full refresh target
+            const fullRefreshHours = config.flags.fullRefreshHours || 24;
+            const lastFull = (await getState<number>('incremental:lastFullRefreshTs')) || 0;
+            const target = lastFull ? (lastFull + fullRefreshHours*3600_000) : Date.now();
+            setNextFullRefresh(target);
             logger.info({ schedule: config.cron }, 'Cron scheduled');
         } else {
             logger.info('CRON_ENABLED is false; cron is disabled');

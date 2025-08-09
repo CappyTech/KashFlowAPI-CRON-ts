@@ -115,3 +115,23 @@ const syncSummarySchema = new mongoose.Schema(
 syncSummarySchema.index({ start: -1 });
 export const SyncSummaryModel = mongoose.model('SyncSummary', syncSummarySchema);
 
+// Upsert logs (per-document audit)
+const upsertLogSchema = new mongoose.Schema(
+    {
+        entity: { type: String, index: true }, // e.g., customers, suppliers, invoices
+        key: { type: String, index: true },    // unique identifying key value (Code or Number)
+        op: { type: String, enum: ['insert','update'], index: true },
+        runId: { type: String, index: true },  // ISO timestamp of sync iteration segment
+        ts: { type: Date, default: () => new Date(), index: true },
+        // optional diffs / metadata (kept flexible)
+        modifiedCount: { type: Number },
+        upsertedId: { type: String },
+    changedFields: { type: [String], index: false },
+    changes: { type: mongoose.Schema.Types.Mixed }, // { field: { before, after } }
+    },
+    { collection: 'upsert_logs', strict: true }
+);
+upsertLogSchema.index({ entity: 1, ts: -1 });
+// Removed standalone runId index because runId field already has index: true, to avoid duplicate index warning
+export const UpsertLogModel = mongoose.model('UpsertLog', upsertLogSchema);
+

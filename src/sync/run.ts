@@ -8,11 +8,32 @@ import { fetchPurchases } from './fetchers/purchases.js';
 import { fetchInvoices } from './fetchers/invoices.js';
 import { fetchQuotes } from './fetchers/quotes.js';
 import { fetchProjects } from './fetchers/projects.js';
-import { CustomerModel, SupplierModel, PurchaseModel, InvoiceModel, QuoteModel, ProjectModel } from '../db/models.js';
+import { CustomerModel, SupplierModel, PurchaseModel, InvoiceModel, QuoteModel, ProjectModel, UpsertLogModel } from '../db/models.js';
 import { markSyncStart, setLastSummary, EntitySummaryBase } from './summary.js';
 import { SyncSummaryModel } from '../db/models.js';
 
 const mutex = new Mutex();
+const DIFF_FIELD_LIMIT = 40;
+function diffDocs(before: any, after: any) {
+  if (!before) return { changedFields: Object.keys(after||{}).slice(0, DIFF_FIELD_LIMIT), changes: Object.fromEntries(Object.entries(after||{}).slice(0, DIFF_FIELD_LIMIT).map(([k,v])=>[k,{ before: undefined, after:v }])) };
+  const changedFields: string[] = [];
+  const changes: any = {};
+  const keys = new Set([...Object.keys(before), ...Object.keys(after||{})]);
+  for (const k of keys) {
+    // Skip volatile / metadata fields we don't want to treat as business diffs
+    if (['updatedAt','createdAt','deletedAt','lastSeenRun','_id','__v'].includes(k)) continue;
+    // Also skip other underscore-prefixed housekeeping keys (defensive)
+    if (k.startsWith('_') && !(['_id','__v'].includes(k) === false)) continue;
+    const bv = before[k];
+    const av = after[k];
+    if (JSON.stringify(bv) !== JSON.stringify(av)) {
+      changedFields.push(k);
+      if (changedFields.length >= DIFF_FIELD_LIMIT) break;
+      changes[k] = { before: bv, after: av };
+    }
+  }
+  return { changedFields, changes };
+}
 
 export async function runSync() {
     return mutex.runExclusive(async () => {
@@ -23,6 +44,15 @@ export async function runSync() {
         const entities: EntitySummaryBase[] = [];
         let overallError: any = null;
         try {
+        // Determine if this run should force a full refresh for incremental entities (option 1 strategy)
+        const now = Date.now();
+        const fullRefreshHours = config.flags.fullRefreshHours || 24;
+        const fullRefreshMs = fullRefreshHours * 3600_000;
+        const lastFullRefreshTs = (await getState<number>('incremental:lastFullRefreshTs')) || 0;
+        const doFullRefreshIncrementals = (now - lastFullRefreshTs) >= fullRefreshMs;
+        if (doFullRefreshIncrementals) {
+            logger.info({ fullRefreshHours }, 'Performing scheduled full refresh for incremental entities');
+        }
 
         // Customers (paged full traversal with cursor; soft-delete only when starting at page 1)
         const custStart = Date.now();
@@ -31,7 +61,8 @@ export async function runSync() {
         let pageCust = lastCursorCust || 1;
         const perpageCust = 100;
         const fullTraverseCustomers = pageCust === 1;
-        let fetchedCust = 0;
+    let fetchedCust = 0;
+    let upsertedCust = 0;
         let totalCust = 0;
         let completedFullCust = false;
         let pagesCust = 0;
@@ -47,10 +78,8 @@ export async function runSync() {
                 logger.info({ entity: 'customers', page: pageCust, pageSize: items.length, cumulative: fetchedCust, total: totalCust, pct: Number(pct.toFixed(2)) }, 'Customers progress');
             }
             for (const c of items) {
-                await CustomerModel.updateOne(
-                    { Code: c.Code },
-                    {
-                        $set: {
+                const existing = await CustomerModel.findOne({ Code: c.Code }).lean();
+                const updateDoc = {
                             ...c,
                             LastUpdatedDate: c.LastUpdatedDate ? new Date(c.LastUpdatedDate) : undefined,
                             CreatedDate: (c as any).CreatedDate ? new Date((c as any).CreatedDate as any) : (c as any).CreatedDate,
@@ -58,11 +87,27 @@ export async function runSync() {
                             LastInvoiceDate: (c as any).LastInvoiceDate ? new Date((c as any).LastInvoiceDate as any) : (c as any).LastInvoiceDate,
                             updatedAt: new Date(),
                             lastSeenRun: runIdCustomers,
-                        },
+                        };
+                const { changedFields, changes } = diffDocs(existing, updateDoc);
+                const res = await CustomerModel.updateOne(
+                    { Code: c.Code },
+                    {
+                        $set: updateDoc,
                         $setOnInsert: { createdAt: new Date(), deletedAt: null },
                     },
                     { upsert: true }
                 );
+                // @ts-ignore driver compat
+                const wasInserted = res.upsertedCount === 1 || (Array.isArray(res.upsertedIds) && res.upsertedIds.length > 0) || !!res.upsertedId;
+                if (wasInserted) upsertedCust += 1; else if (res.modifiedCount) upsertedCust += 1; // treat modifications as upserts for count visibility
+                try {
+                    await UpsertLogModel.create({ entity: 'customers', key: c.Code, op: wasInserted ? 'insert':'update', runId: runIdCustomers, modifiedCount: (res as any).modifiedCount, upsertedId: (res as any).upsertedId, changedFields, changes });
+                } catch(e) {
+                    if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write customer upsert log');
+                }
+                if (config.flags.upsertLogs) {
+                    logger.debug({ entity: 'customers', code: c.Code, wasInserted, modifiedCount: (res as any).modifiedCount }, 'Customer upsert');
+                }
             }
             if (items.length === 0 && pageCust > 1) {
                 // End reached; mark traversal completed only if started at page 1
@@ -89,8 +134,8 @@ export async function runSync() {
             softDeletedCust = (resSD && (resSD.modifiedCount ?? 0)) as number;
         }
     const custMs = Date.now() - custStart;
-    logger.info({ pages: pagesCust, fetched: fetchedCust, processed: fetchedCust, total: totalCust, softDeleted: softDeletedCust, ms: custMs }, 'Customers sync completed');
-    entities.push({ entity: 'customers', pages: pagesCust, fetched: fetchedCust, processed: fetchedCust, total: totalCust, softDeleted: softDeletedCust, ms: custMs });
+    logger.info({ pages: pagesCust, fetched: fetchedCust, processed: fetchedCust, upserted: upsertedCust, total: totalCust, softDeleted: softDeletedCust, ms: custMs }, 'Customers sync completed');
+    entities.push({ entity: 'customers', pages: pagesCust, fetched: fetchedCust, processed: fetchedCust, upserted: upsertedCust, total: totalCust, softDeleted: softDeletedCust, ms: custMs });
         // Compare DB vs API totals only when we performed a full traversal (safe for soft-deletes)
         if (completedFullCust) {
             try {
@@ -112,7 +157,8 @@ export async function runSync() {
         let pageSup = lastCursorSup || 1;
         const perpageSup = 250;
         const fullTraverseSuppliers = pageSup === 1;
-        let fetchedSup = 0;
+    let fetchedSup = 0;
+    let upsertedSupCount = 0;
         let totalSup = 0;
         const initialPageSup = pageSup;
         let loopedSup = false;
@@ -130,19 +176,23 @@ export async function runSync() {
                 logger.info({ entity: 'suppliers', page: pageSup, pageSize: items.length, cumulative: fetchedSup, total: totalSup, pct: Number(pct.toFixed(2)), looped: loopedSup }, 'Suppliers progress');
             }
             for (const s of items) {
-                await SupplierModel.updateOne(
+                const existingSup = await SupplierModel.findOne({ Code: s.Code }).lean();
+                const updateSup = { ...s, LastUpdatedDate: s.LastUpdatedDate ? new Date(s.LastUpdatedDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdSup };
+                const { changedFields: changedFieldsSup, changes: changesSup } = diffDocs(existingSup, updateSup);
+                const res = await SupplierModel.updateOne(
                     { Code: s.Code },
-                    {
-                        $set: {
-                            ...s,
-                            LastUpdatedDate: s.LastUpdatedDate ? new Date(s.LastUpdatedDate) : undefined,
-                            updatedAt: new Date(),
-                            lastSeenRun: runIdSup,
-                        },
-                        $setOnInsert: { createdAt: new Date(), deletedAt: null },
-                    },
+                    { $set: updateSup, $setOnInsert: { createdAt: new Date(), deletedAt: null } },
                     { upsert: true }
                 );
+                // @ts-ignore
+                const wasInserted = res.upsertedCount === 1 || (Array.isArray(res.upsertedIds) && res.upsertedIds.length > 0) || !!res.upsertedId;
+                if (wasInserted) upsertedSupCount += 1; else if (res.modifiedCount) upsertedSupCount += 1;
+                try {
+                    await UpsertLogModel.create({ entity: 'suppliers', key: s.Code, op: wasInserted ? 'insert':'update', runId: runIdSup, modifiedCount: (res as any).modifiedCount, upsertedId: (res as any).upsertedId, changedFields: changedFieldsSup, changes: changesSup });
+                } catch(e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write supplier upsert log'); }
+                if (config.flags.upsertLogs) {
+                    logger.debug({ entity: 'suppliers', code: s.Code, wasInserted, modifiedCount: (res as any).modifiedCount }, 'Supplier upsert');
+                }
             }
             if (items.length === 0 && pageSup > 1) {
                 // Went past the last page; if we haven't looped and didn't start at page 1, wrap to beginning.
@@ -186,8 +236,8 @@ export async function runSync() {
             softDeletedSup = (resSD && (resSD.modifiedCount ?? 0)) as number;
         }
     const supMs = Date.now() - supStart;
-    logger.info({ pages: pagesSup, fetched: fetchedSup, processed: fetchedSup, total: totalSup, softDeleted: softDeletedSup, ms: supMs }, 'Suppliers sync completed');
-    entities.push({ entity: 'suppliers', pages: pagesSup, fetched: fetchedSup, processed: fetchedSup, total: totalSup, softDeleted: softDeletedSup, ms: supMs });
+    logger.info({ pages: pagesSup, fetched: fetchedSup, processed: fetchedSup, upserted: upsertedSupCount, total: totalSup, softDeleted: softDeletedSup, ms: supMs }, 'Suppliers sync completed');
+    entities.push({ entity: 'suppliers', pages: pagesSup, fetched: fetchedSup, processed: fetchedSup, upserted: upsertedSupCount, total: totalSup, softDeleted: softDeletedSup, ms: supMs });
         // Suppliers traverse fully each run (wrap-around). Compare Mongo vs API totals.
         try {
             const dbCountSup = await SupplierModel.countDocuments({ $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }] });
@@ -218,7 +268,7 @@ export async function runSync() {
         let upsertedPur = 0;
         let pagesPur = 0;
         let stoppedReasonPur: string | undefined;
-        while (true) {
+    while (true) {
             const res = await fetchPurchases(pagePur, perpagePur, { order: 'Desc' });
             const items = res.items || [];
             pagesPur += 1;
@@ -226,32 +276,38 @@ export async function runSync() {
             totalPur = res.total || totalPur;
             for (const p of items) {
                 if (p.Number && p.Number > newMaxPur) newMaxPur = p.Number;
-                if (p.Number && p.Number <= lastMaxPur) { reachedOldPur = true; continue; }
-                await PurchaseModel.updateOne(
+        if (!doFullRefreshIncrementals && p.Number && p.Number <= lastMaxPur) { reachedOldPur = true; continue; }
+                const existingPur = await PurchaseModel.findOne({ Number: p.Number }).lean();
+                const updatePurDoc = { ...p, IssuedDate: p.IssuedDate ? new Date(p.IssuedDate) : undefined, DueDate: p.DueDate ? new Date(p.DueDate) : undefined, PaidDate: p.PaidDate ? new Date(p.PaidDate) : p.PaidDate, updatedAt: new Date(), lastSeenRun: runIdPur };
+                const { changedFields: changedFieldsPur, changes: changesPur } = diffDocs(existingPur, updatePurDoc);
+                const res = await PurchaseModel.updateOne(
                     { Number: p.Number },
-                    {
-                        $set: {
-                            ...p,
-                            IssuedDate: p.IssuedDate ? new Date(p.IssuedDate) : undefined,
-                            DueDate: p.DueDate ? new Date(p.DueDate) : undefined,
-                            PaidDate: p.PaidDate ? new Date(p.PaidDate) : p.PaidDate,
-                            updatedAt: new Date(),
-                            lastSeenRun: runIdPur,
-                        },
-                        $setOnInsert: { createdAt: new Date(), deletedAt: null },
-                    },
+                    { $set: updatePurDoc, $setOnInsert: { createdAt: new Date(), deletedAt: null } },
                     { upsert: true }
                 );
+                // @ts-ignore
+                const wasInserted = res.upsertedCount === 1 || !!res.upsertedId;
                 upsertedPur += 1;
+                try { await UpsertLogModel.create({ entity: 'purchases', key: String(p.Number), op: wasInserted? 'insert':'update', runId: runIdPur, modifiedCount: (res as any).modifiedCount, upsertedId: (res as any).upsertedId, changedFields: changedFieldsPur, changes: changesPur }); } catch(e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write purchase upsert log'); }
             }
             if (reachedOldPur) { stoppedReasonPur = 'reachedOld'; break; }
             if (items.length < perpagePur) { stoppedReasonPur = 'partialPage'; break; }
             pagePur += 1;
         }
         if (newMaxPur > lastMaxPur) await setState('purchases:lastMaxNumber', newMaxPur);
+        // Soft delete for purchases only on full refresh runs
+        let softDeletedPur = 0;
+        if (doFullRefreshIncrementals && config.flags.incrementalSoftDelete) {
+            const resSD = await PurchaseModel.updateMany(
+                { $or: [{ lastSeenRun: { $ne: runIdPur } }, { lastSeenRun: { $exists: false } }], deletedAt: null },
+                { $set: { deletedAt: new Date(), updatedAt: new Date() } }
+            );
+            // @ts-ignore
+            softDeletedPur = (resSD && (resSD.modifiedCount ?? 0)) as number;
+        }
     const purMs = Date.now() - purStart;
-    logger.info({ pages: pagesPur, fetched: fetchedPur, upserted: upsertedPur, total: totalPur, lastMax: lastMaxPur, newMax: newMaxPur, reachedOld: reachedOldPur, stoppedReason: stoppedReasonPur, ms: purMs }, 'Purchases sync completed (incremental)');
-    entities.push({ entity: 'purchases', pages: pagesPur, fetched: fetchedPur, upserted: upsertedPur, total: totalPur, lastMax: lastMaxPur, newMax: newMaxPur, reachedOld: reachedOldPur, stoppedReason: stoppedReasonPur, ms: purMs });
+    logger.info({ pages: pagesPur, fetched: fetchedPur, upserted: upsertedPur, total: totalPur, lastMax: lastMaxPur, newMax: newMaxPur, reachedOld: reachedOldPur, stoppedReason: stoppedReasonPur, softDeleted: softDeletedPur, fullRefresh: doFullRefreshIncrementals, ms: purMs }, 'Purchases sync completed (incremental)');
+    entities.push({ entity: 'purchases', pages: pagesPur, fetched: fetchedPur, upserted: upsertedPur, total: totalPur, lastMax: lastMaxPur, newMax: newMaxPur, reachedOld: reachedOldPur, softDeleted: softDeletedPur, stoppedReason: stoppedReasonPur, fullRefresh: doFullRefreshIncrementals, ms: purMs });
 
         // Invoices (incremental by max Number)
         const invStart = Date.now();
@@ -271,7 +327,7 @@ export async function runSync() {
         let upsertedInv = 0;
         let pagesInv = 0;
         let stoppedReasonInv: string | undefined;
-        while (true) {
+    while (true) {
             const res = await fetchInvoices(pageInv, perpageInv, { order: 'Desc' });
             const items = res.items || [];
             pagesInv += 1;
@@ -279,33 +335,36 @@ export async function runSync() {
             totalInv = res.total || totalInv;
             for (const i of items) {
                 if (i.Number && i.Number > newMaxInv) newMaxInv = i.Number;
-                if (i.Number && i.Number <= lastMaxInv) { reachedOldInv = true; continue; }
-                await InvoiceModel.updateOne(
+        if (!doFullRefreshIncrementals && i.Number && i.Number <= lastMaxInv) { reachedOldInv = true; continue; }
+                const existingInv = await InvoiceModel.findOne({ Number: i.Number }).lean();
+                const updateInv = { ...i, IssuedDate: i.IssuedDate ? new Date(i.IssuedDate) : undefined, DueDate: i.DueDate ? new Date(i.DueDate) : undefined, LastPaymentDate: i.LastPaymentDate ? new Date(i.LastPaymentDate) : i.LastPaymentDate, PaidDate: i.PaidDate ? new Date(i.PaidDate) : i.PaidDate, updatedAt: new Date(), lastSeenRun: runIdInv };
+                const { changedFields: changedFieldsInv, changes: changesInv } = diffDocs(existingInv, updateInv);
+                const res = await InvoiceModel.updateOne(
                     { Number: i.Number },
-                    {
-                        $set: {
-                            ...i,
-                            IssuedDate: i.IssuedDate ? new Date(i.IssuedDate) : undefined,
-                            DueDate: i.DueDate ? new Date(i.DueDate) : undefined,
-                            LastPaymentDate: i.LastPaymentDate ? new Date(i.LastPaymentDate) : i.LastPaymentDate,
-                            PaidDate: i.PaidDate ? new Date(i.PaidDate) : i.PaidDate,
-                            updatedAt: new Date(),
-                            lastSeenRun: runIdInv,
-                        },
-                        $setOnInsert: { createdAt: new Date(), deletedAt: null, uuid: `invoice:${i.Number}` },
-                    },
+                    { $set: updateInv, $setOnInsert: { createdAt: new Date(), deletedAt: null, uuid: `invoice:${i.Number}` } },
                     { upsert: true }
                 );
                 upsertedInv += 1;
+                try { // @ts-ignore
+                    const wasInserted = res.upsertedCount === 1 || !!res.upsertedId; await UpsertLogModel.create({ entity: 'invoices', key: String(i.Number), op: wasInserted?'insert':'update', runId: runIdInv, modifiedCount:(res as any).modifiedCount, upsertedId:(res as any).upsertedId, changedFields: changedFieldsInv, changes: changesInv }); } catch(e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write invoice upsert log'); }
             }
             if (reachedOldInv) { stoppedReasonInv = 'reachedOld'; break; }
             if (items.length < perpageInv) { stoppedReasonInv = 'partialPage'; break; }
             pageInv += 1;
         }
         if (newMaxInv > lastMaxInv) await setState('invoices:lastMaxNumber', newMaxInv);
+        let softDeletedInv = 0;
+        if (doFullRefreshIncrementals && config.flags.incrementalSoftDelete) {
+            const resSD = await InvoiceModel.updateMany(
+                { $or: [{ lastSeenRun: { $ne: runIdInv } }, { lastSeenRun: { $exists: false } }], deletedAt: null },
+                { $set: { deletedAt: new Date(), updatedAt: new Date() } }
+            );
+            // @ts-ignore
+            softDeletedInv = (resSD && (resSD.modifiedCount ?? 0)) as number;
+        }
     const invMs = Date.now() - invStart;
-    logger.info({ pages: pagesInv, fetched: fetchedInv, upserted: upsertedInv, total: totalInv, lastMax: lastMaxInv, newMax: newMaxInv, reachedOld: reachedOldInv, stoppedReason: stoppedReasonInv, ms: invMs }, 'Invoices sync completed (incremental)');
-    entities.push({ entity: 'invoices', pages: pagesInv, fetched: fetchedInv, upserted: upsertedInv, total: totalInv, lastMax: lastMaxInv, newMax: newMaxInv, reachedOld: reachedOldInv, stoppedReason: stoppedReasonInv, ms: invMs });
+    logger.info({ pages: pagesInv, fetched: fetchedInv, upserted: upsertedInv, total: totalInv, lastMax: lastMaxInv, newMax: newMaxInv, reachedOld: reachedOldInv, stoppedReason: stoppedReasonInv, softDeleted: softDeletedInv, fullRefresh: doFullRefreshIncrementals, ms: invMs }, 'Invoices sync completed (incremental)');
+    entities.push({ entity: 'invoices', pages: pagesInv, fetched: fetchedInv, upserted: upsertedInv, total: totalInv, lastMax: lastMaxInv, newMax: newMaxInv, reachedOld: reachedOldInv, softDeleted: softDeletedInv, stoppedReason: stoppedReasonInv, fullRefresh: doFullRefreshIncrementals, ms: invMs });
 
         // Quotes (incremental by max Number)
         const qStart = Date.now();
@@ -325,7 +384,7 @@ export async function runSync() {
         let upsertedQ = 0;
         let pagesQ = 0;
         let stoppedReasonQ: string | undefined;
-        while (true) {
+    while (true) {
             const res = await fetchQuotes(pageQ, perpageQ, { order: 'Desc' });
             const items = res.items || [];
             pagesQ += 1;
@@ -333,30 +392,36 @@ export async function runSync() {
             totalQ = res.total || totalQ;
             for (const q of items) {
                 if (q.Number && q.Number > newMaxQ) newMaxQ = q.Number;
-                if (q.Number && q.Number <= lastMaxQ) { reachedOldQ = true; continue; }
-                await QuoteModel.updateOne(
+        if (!doFullRefreshIncrementals && q.Number && q.Number <= lastMaxQ) { reachedOldQ = true; continue; }
+                const existingQ = await QuoteModel.findOne({ Number: q.Number }).lean();
+                const updateQ = { ...q, Date: q.Date ? new Date(q.Date) : undefined, updatedAt: new Date(), lastSeenRun: runIdQ };
+                const { changedFields: changedFieldsQ, changes: changesQ } = diffDocs(existingQ, updateQ);
+                const res = await QuoteModel.updateOne(
                     { Number: q.Number },
-                    {
-                        $set: {
-                            ...q,
-                            Date: q.Date ? new Date(q.Date) : undefined,
-                            updatedAt: new Date(),
-                            lastSeenRun: runIdQ,
-                        },
-                        $setOnInsert: { createdAt: new Date(), deletedAt: null },
-                    },
+                    { $set: updateQ, $setOnInsert: { createdAt: new Date(), deletedAt: null } },
                     { upsert: true }
                 );
                 upsertedQ += 1;
+                try { // @ts-ignore
+                    const wasInserted = res.upsertedCount === 1 || !!res.upsertedId; await UpsertLogModel.create({ entity: 'quotes', key: String(q.Number), op: wasInserted?'insert':'update', runId: runIdQ, modifiedCount:(res as any).modifiedCount, upsertedId:(res as any).upsertedId, changedFields: changedFieldsQ, changes: changesQ }); } catch(e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write quote upsert log'); }
             }
             if (reachedOldQ) { stoppedReasonQ = 'reachedOld'; break; }
             if (items.length < perpageQ) { stoppedReasonQ = 'partialPage'; break; }
             pageQ += 1;
         }
         if (newMaxQ > lastMaxQ) await setState('quotes:lastMaxNumber', newMaxQ);
+        let softDeletedQ = 0;
+        if (doFullRefreshIncrementals && config.flags.incrementalSoftDelete) {
+            const resSD = await QuoteModel.updateMany(
+                { $or: [{ lastSeenRun: { $ne: runIdQ } }, { lastSeenRun: { $exists: false } }], deletedAt: null },
+                { $set: { deletedAt: new Date(), updatedAt: new Date() } }
+            );
+            // @ts-ignore
+            softDeletedQ = (resSD && (resSD.modifiedCount ?? 0)) as number;
+        }
     const qMs = Date.now() - qStart;
-    logger.info({ pages: pagesQ, fetched: fetchedQ, upserted: upsertedQ, total: totalQ, lastMax: lastMaxQ, newMax: newMaxQ, reachedOld: reachedOldQ, stoppedReason: stoppedReasonQ, ms: qMs }, 'Quotes sync completed (incremental)');
-    entities.push({ entity: 'quotes', pages: pagesQ, fetched: fetchedQ, upserted: upsertedQ, total: totalQ, lastMax: lastMaxQ, newMax: newMaxQ, reachedOld: reachedOldQ, stoppedReason: stoppedReasonQ, ms: qMs });
+    logger.info({ pages: pagesQ, fetched: fetchedQ, upserted: upsertedQ, total: totalQ, lastMax: lastMaxQ, newMax: newMaxQ, reachedOld: reachedOldQ, stoppedReason: stoppedReasonQ, softDeleted: softDeletedQ, fullRefresh: doFullRefreshIncrementals, ms: qMs }, 'Quotes sync completed (incremental)');
+    entities.push({ entity: 'quotes', pages: pagesQ, fetched: fetchedQ, upserted: upsertedQ, total: totalQ, lastMax: lastMaxQ, newMax: newMaxQ, reachedOld: reachedOldQ, softDeleted: softDeletedQ, stoppedReason: stoppedReasonQ, fullRefresh: doFullRefreshIncrementals, ms: qMs });
 
         // Projects (incremental by max Number)
         const pjStart = Date.now();
@@ -377,7 +442,7 @@ export async function runSync() {
         let pagesPj = 0;
         let stoppedReasonPj: string | undefined;
         let unpagedPj = false;
-        while (true) {
+    while (true) {
             const res = await fetchProjects(pagePj, perpagePj, { order: 'Desc' });
             const items = res.items || [];
             pagesPj += 1;
@@ -385,22 +450,18 @@ export async function runSync() {
             totalPj = res.total || totalPj;
             for (const pj of items) {
                 if (pj.Number && pj.Number > newMaxPj) newMaxPj = pj.Number;
-                if (pj.Number && pj.Number <= lastMaxPj) { reachedOldPj = true; continue; }
-                await ProjectModel.updateOne(
+        if (!doFullRefreshIncrementals && pj.Number && pj.Number <= lastMaxPj) { reachedOldPj = true; continue; }
+                const existingPj = await ProjectModel.findOne({ Number: pj.Number }).lean();
+                const updatePj = { ...pj, StartDate: pj.StartDate ? new Date(pj.StartDate) : undefined, EndDate: pj.EndDate ? new Date(pj.EndDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdPj };
+                const { changedFields: changedFieldsPj, changes: changesPj } = diffDocs(existingPj, updatePj);
+                const res = await ProjectModel.updateOne(
                     { Number: pj.Number },
-                    {
-                        $set: {
-                            ...pj,
-                            StartDate: pj.StartDate ? new Date(pj.StartDate) : undefined,
-                            EndDate: pj.EndDate ? new Date(pj.EndDate) : undefined,
-                            updatedAt: new Date(),
-                            lastSeenRun: runIdPj,
-                        },
-                        $setOnInsert: { createdAt: new Date(), deletedAt: null },
-                    },
+                    { $set: updatePj, $setOnInsert: { createdAt: new Date(), deletedAt: null } },
                     { upsert: true }
                 );
                 upsertedPj += 1;
+                try { // @ts-ignore
+                    const wasInserted = res.upsertedCount === 1 || !!res.upsertedId; await UpsertLogModel.create({ entity: 'projects', key: String(pj.Number), op: wasInserted?'insert':'update', runId: runIdPj, modifiedCount:(res as any).modifiedCount, upsertedId:(res as any).upsertedId, changedFields: changedFieldsPj, changes: changesPj }); } catch(e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write project upsert log'); }
             }
             // Stop if:
             // - We reached previously seen records,
@@ -414,9 +475,21 @@ export async function runSync() {
             pagePj += 1;
         }
         if (newMaxPj > lastMaxPj) await setState('projects:lastMaxNumber', newMaxPj);
+        let softDeletedPj = 0;
+        if (doFullRefreshIncrementals && config.flags.incrementalSoftDelete) {
+            const resSD = await ProjectModel.updateMany(
+                { $or: [{ lastSeenRun: { $ne: runIdPj } }, { lastSeenRun: { $exists: false } }], deletedAt: null },
+                { $set: { deletedAt: new Date(), updatedAt: new Date() } }
+            );
+            // @ts-ignore
+            softDeletedPj = (resSD && (resSD.modifiedCount ?? 0)) as number;
+        }
         const pjMs = Date.now() - pjStart;
-        logger.info({ pages: pagesPj, fetched: fetchedPj, upserted: upsertedPj, total: totalPj, lastMax: lastMaxPj, newMax: newMaxPj, reachedOld: reachedOldPj, stoppedReason: stoppedReasonPj, unpaged: unpagedPj, ms: pjMs }, 'Projects sync completed (incremental)');
-        entities.push({ entity: 'projects', pages: pagesPj, fetched: fetchedPj, upserted: upsertedPj, total: totalPj, lastMax: lastMaxPj, newMax: newMaxPj, reachedOld: reachedOldPj, stoppedReason: stoppedReasonPj, unpaged: unpagedPj, ms: pjMs });
+        logger.info({ pages: pagesPj, fetched: fetchedPj, upserted: upsertedPj, total: totalPj, lastMax: lastMaxPj, newMax: newMaxPj, reachedOld: reachedOldPj, stoppedReason: stoppedReasonPj, unpaged: unpagedPj, softDeleted: softDeletedPj, fullRefresh: doFullRefreshIncrementals, ms: pjMs }, 'Projects sync completed (incremental)');
+        entities.push({ entity: 'projects', pages: pagesPj, fetched: fetchedPj, upserted: upsertedPj, total: totalPj, lastMax: lastMaxPj, newMax: newMaxPj, reachedOld: reachedOldPj, stoppedReason: stoppedReasonPj, unpaged: unpagedPj, softDeleted: softDeletedPj, fullRefresh: doFullRefreshIncrementals, ms: pjMs });
+        if (doFullRefreshIncrementals) {
+            await setState('incremental:lastFullRefreshTs', now);
+        }
 
         } catch (err) {
             overallError = err;

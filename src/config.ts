@@ -51,6 +51,11 @@ export const config = {
         runOnce: bool(process.env.RUN_ONCE, false),
         progressLogs: bool(process.env.PROGRESS_LOGS, true),
         directDb: bool(process.env.DIRECT_DB, false), // connect directly to Mongo (no SSH tunnel)
+    upsertLogs: bool(process.env.UPSERT_LOGS, false), // verbose per-document upsert debug logs
+    // Perform a full traversal (no early stop) for incremental entities every N hours to enable safe soft delete of removed records
+    fullRefreshHours: parseInt(process.env.FULL_REFRESH_HOURS || '24', 10),
+    // After a full refresh completes, soft delete any incremental-entity docs not seen in that refresh (lastSeenRun mismatch)
+    incrementalSoftDelete: bool(process.env.INCREMENTAL_SOFT_DELETE, true),
     },
 
         metrics: {

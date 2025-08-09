@@ -8,7 +8,7 @@
     "build": "tsc -p .",
     "dev": "node --watch --loader ts-node/esm src/index.ts",
     "start": "node dist/index.js",
-  "inspect": "node dist/scripts/inspect.js",
+    "inspect": "node dist/scripts/inspect.js",
     "lint": "echo Lint step deferred due to Node 20.2 engine constraints"
   },
   "keywords": [],
@@ -28,6 +28,7 @@
   "dependencies": {
     "async-mutex": "^0.5.0",
     "axios": "^1.11.0",
+    "cron-parser": "^4.9.0",
     "dotenv": "^17.2.1",
     "http-status-codes": "^2.3.0",
     "mongoose": "^8.17.1",
