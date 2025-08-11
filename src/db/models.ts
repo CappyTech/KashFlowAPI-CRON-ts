@@ -1,4 +1,5 @@
 import mongoose from './mongoose.js';
+import { v4 as uuidv4 } from 'uuid';
 
 const common = {
     createdAt: { type: Date },
@@ -9,78 +10,217 @@ const common = {
 
 const customerSchema = new mongoose.Schema(
     {
-        Id: { type: Number },
-        Code: { type: String },
-        Name: { type: String },
-        LastUpdatedDate: { type: Date },
+        uuid: { type: String, unique: true, required: true, default: uuidv4 },
+        Id: Number,
+        Code: String,
+        Name: String,
+        DisplayName: String,
+        Note: String,
+        CreatedDate: Date,
+        LastUpdatedDate: Date,
+        FirstInvoiceDate: Date,
+        LastInvoiceDate: Date,
+        InvoiceCount: Number,
+        InvoicedNetAmount: Number,
+        InvoicedVATAmount: Number,
+        OutstandingBalance: Number,
+        TotalPaidAmount: Number,
+        DiscountRate: Number,
+        DefaultNominalCode: Number,
+        DefaultCustomerReference: String,
+        VATNumber: String,
+        IsRegisteredInEC: Boolean,
+        IsRegisteredOutsideEC: Boolean,
+        IsArchived: Boolean,
+        ReceivesWholesalePricing: Boolean,
+        ApplyWHT: Boolean,
+        WHTRate: Number,
+        PaymentTerms: mongoose.Schema.Types.Mixed,
+        Currency: mongoose.Schema.Types.Mixed,
+        Contacts: [mongoose.Schema.Types.Mixed],
+        Addresses: [mongoose.Schema.Types.Mixed],
+        DeliveryAddresses: [mongoose.Schema.Types.Mixed],
+        CustomCheckBoxes: [mongoose.Schema.Types.Mixed],
+        CustomTextBoxes: [mongoose.Schema.Types.Mixed],
         ...common,
     },
     { collection: 'customers', strict: false }
 );
-customerSchema.index({ Code: 1 }, { unique: true, sparse: true });
-
+customerSchema.index({ Code: 1 }, { unique: true });
 export const CustomerModel = mongoose.model('Customer', customerSchema);
 
 const supplierSchema = new mongoose.Schema(
     {
-        Id: { type: Number },
-        Code: { type: String },
-        Name: { type: String },
-        LastUpdatedDate: { type: Date },
+        uuid: { type: String, unique: true, required: true, default: uuidv4 },
+        Id: Number,
+        Code: String,
+        Name: String,
+        Note: String,
+        CreatedDate: Date,
+        LastUpdatedDate: Date,
+        FirstPurchaseDate: Date,
+        LastPurchaseDate: Date,
+        OutstandingBalance: Number,
+        TotalPaidAmount: Number,
+        DefaultNominalCode: Number,
+        VATNumber: String,
+        IsRegisteredInEC: Boolean,
+        IsArchived: Boolean,
+        PaymentTerms: mongoose.Schema.Types.Mixed,
+        Currency: mongoose.Schema.Types.Mixed,
+        Contacts: [mongoose.Schema.Types.Mixed],
+        Address: mongoose.Schema.Types.Mixed,
+        DeliveryAddresses: [mongoose.Schema.Types.Mixed],
         ...common,
     },
     { collection: 'suppliers', strict: false }
 );
-supplierSchema.index({ Code: 1 }, { unique: true, sparse: true });
+supplierSchema.index({ Code: 1 }, { unique: true });
 export const SupplierModel = mongoose.model('Supplier', supplierSchema);
 
 const invoiceSchema = new mongoose.Schema(
     {
-        Id: { type: Number },
-        Number: { type: Number },
-        CustomerCode: { type: String },
-        uuid: { type: String, index: true, sparse: true },
+        uuid: { type: String, unique: true, required: true, default: uuidv4 },
+        Id: Number,
+        Number: { type: Number, required: true },
+        CustomerId: Number,
+        CustomerName: String,
+        CustomerReference: String,
+        Currency: mongoose.Schema.Types.Mixed,
+        NetAmount: Number,
+        GrossAmount: Number,
+        VATAmount: Number,
+        AmountPaid: Number,
+        TotalPaidAmount: Number,
+        Paid: Number,
+        IssuedDate: Date,
+        DueDate: Date,
+        PaidDate: Date,
+        LastPaymentDate: Date,
+        Status: String,
+        LineItems: [mongoose.Schema.Types.Mixed],
+        PaymentLines: [mongoose.Schema.Types.Mixed],
+        DeliveryAddress: mongoose.Schema.Types.Mixed,
+        Address: mongoose.Schema.Types.Mixed,
+        UseCustomDeliveryAddress: Boolean,
+        Permalink: String,
+        PackingSlipPermalink: String,
+        ReminderLetters: [mongoose.Schema.Types.Mixed],
+        PreviousNumber: Number,
+        NextNumber: Number,
+        OverdueDays: Number,
         ...common,
     },
     { collection: 'invoices', strict: false }
 );
-invoiceSchema.index({ Number: 1 }, { unique: true, sparse: true });
+invoiceSchema.index({ Number: 1 }, { unique: true });
 export const InvoiceModel = mongoose.model('Invoice', invoiceSchema);
 
 const quoteSchema = new mongoose.Schema(
     {
-        Id: { type: Number },
-        Number: { type: Number },
-        CustomerCode: { type: String },
+        uuid: { type: String, unique: true, required: true, default: uuidv4 },
+        Id: Number,
+        Number: { type: Number, required: true },
+        CustomerId: Number,
+        CustomerName: String,
+        CustomerReference: String,
+        Currency: mongoose.Schema.Types.Mixed,
+        NetAmount: Number,
+        GrossAmount: Number,
+        VATAmount: Number,
+        AmountPaid: Number,
+        Paid: Number,
+        Date: Date,
+        Status: String,
+        LineItems: [mongoose.Schema.Types.Mixed],
+        DeliveryAddress: mongoose.Schema.Types.Mixed,
+        Address: mongoose.Schema.Types.Mixed,
+        UseCustomDeliveryAddress: Boolean,
+        Permalink: String,
+        PreviousNumber: Number,
+        NextNumber: Number,
         ...common,
     },
     { collection: 'quotes', strict: false }
 );
-quoteSchema.index({ Number: 1 }, { unique: true, sparse: true });
+quoteSchema.index({ Number: 1 }, { unique: true });
 export const QuoteModel = mongoose.model('Quote', quoteSchema);
 
 const purchaseSchema = new mongoose.Schema(
     {
-        Id: { type: Number },
-        Number: { type: Number },
-        SupplierCode: { type: String },
+        uuid: { type: String, unique: true, required: true, default: uuidv4 },
+        Id: Number,
+        Number: { type: Number, required: true },
+        SupplierId: Number,
+        SupplierCode: String,
+        SupplierName: String,
+        SupplierReference: String,
+        Currency: mongoose.Schema.Types.Mixed,
+        NetAmount: Number,
+        GrossAmount: Number,
+        VATAmount: Number,
+        AmountPaid: Number,
+        TotalPaidAmount: Number,
+        Paid: Number,
+        IssuedDate: Date,
+        DueDate: Date,
+        PaidDate: Date,
+        Status: String,
+        LineItems: [mongoose.Schema.Types.Mixed],
+        PaymentLines: [mongoose.Schema.Types.Mixed],
+        DeliveryAddress: mongoose.Schema.Types.Mixed,
+        Address: mongoose.Schema.Types.Mixed,
+        UseCustomDeliveryAddress: Boolean,
+        Permalink: String,
+        PreviousNumber: Number,
+        NextNumber: Number,
+        OverdueDays: Number,
+        AdditionalFieldValue: String,
+        FileCount: Number,
+        IsWhtDeductionToBeApplied: Boolean,
+        PurchaseInECMemberState: Boolean,
+        StockManagementApplicable: Boolean,
+        ReadableString: String,
+        SubmissionDate: Date,
+        TaxMonth: Number,
+        TaxYear: Number,
         ...common,
     },
     { collection: 'purchases', strict: false }
 );
-purchaseSchema.index({ Number: 1 }, { unique: true, sparse: true });
+purchaseSchema.index({ Number: 1 }, { unique: true });
 export const PurchaseModel = mongoose.model('Purchase', purchaseSchema);
 
 const projectSchema = new mongoose.Schema(
     {
-        Id: { type: Number },
-        Number: { type: Number },
-        CustomerCode: { type: String },
+        uuid: { type: String, unique: true, required: true, default: uuidv4 },
+        Id: Number,
+        Number: Number,
+        Name: String,
+        Description: String,
+        Reference: String,
+        CustomerCode: String,
+        CustomerName: String,
+        StartDate: Date,
+        EndDate: Date,
+        Status: Number,
+        StatusName: String,
+        Note: String,
+        ActualJournalsAmount: Number,
+        ActualPurchasesAmount: Number,
+        ActualSalesAmount: Number,
+        TargetPurchasesAmount: Number,
+        TargetSalesAmount: Number,
+        ActualPurchasesVATAmount: Number,
+        ActualSalesVATAmount: Number,
+        WorkInProgressAmount: Number,
+        ExcludeVAT: Number,
+        AssociatedQuotesCount: Number,
         ...common,
     },
     { collection: 'projects', strict: false }
 );
-projectSchema.index({ Number: 1 }, { unique: true, sparse: true });
+projectSchema.index({ Number: 1 }, { unique: true });
 export const ProjectModel = mongoose.model('Project', projectSchema);
 
 // Sync summaries (historical)
@@ -120,14 +260,14 @@ const upsertLogSchema = new mongoose.Schema(
     {
         entity: { type: String, index: true }, // e.g., customers, suppliers, invoices
         key: { type: String, index: true },    // unique identifying key value (Code or Number)
-        op: { type: String, enum: ['insert','update'], index: true },
+        op: { type: String, enum: ['insert', 'update'], index: true },
         runId: { type: String, index: true },  // ISO timestamp of sync iteration segment
         ts: { type: Date, default: () => new Date(), index: true },
         // optional diffs / metadata (kept flexible)
         modifiedCount: { type: Number },
         upsertedId: { type: String },
-    changedFields: { type: [String], index: false },
-    changes: { type: mongoose.Schema.Types.Mixed }, // { field: { before, after } }
+        changedFields: { type: [String], index: false },
+        changes: { type: mongoose.Schema.Types.Mixed }, // { field: { before, after } }
     },
     { collection: 'upsert_logs', strict: true }
 );

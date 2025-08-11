@@ -1,0 +1,46 @@
+{
+    "Category": {
+        "IconColor": null,
+        "IconId": 0,
+        "Name": null,
+        "Number": 0,
+        "IconType": null
+    },
+    "Currency": {
+        "Code": "INR",
+        "ExchangeRate": 50.0000,
+        "DisplaySymbolOnRight": false,
+        "Name": "Indian Rupees",
+        "Symbol": "Rs"
+    },
+    "CustomerCode": "13",
+    "CustomerId": 7343,
+    "CustomerName": "Jack Turner",
+    "Date": "2012-03-01 12:00:00",
+    "GrossAmount": 120.0000,
+    "Id": 67295,
+    "LineItems": [{
+        "NominalCode": 1,
+        "Description": "Adding a 3rd Line Item",
+        "Number": 1,
+        "ProductCode": "510",
+        "ProductName": "Mobile",
+        "Quantity": 10.0000,
+        "HomeCurrencyRate": 10.0000,
+        "HomeCurrencyVATAmount": 20.0000,
+        "VATExempt": false,
+        "VATLevel": 20.0000,
+        "TaxCode": "",
+        "Rate":500,
+        "VATAmount" : 1000
+    }],
+    "NetAmount": 100.0000,
+    "NextNumber": 11248,
+    "Number": 11,
+    "PreviousNumber": 11247,
+    "ProjectNumber": 0,
+    "CustomerReference": "dgrsfgsrf",
+    "SuppressAmount": false,
+    "VATAmount": 20.0000,
+    "Permalink": "/v2/documents/quote/c4093bc7-b70c-435d-ac70-d9cd2f478a54"
+}

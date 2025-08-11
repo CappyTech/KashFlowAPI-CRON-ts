@@ -61,7 +61,7 @@ async function run() {
             const query: any = code ? { Code: code } : {};
             const docs = await SupplierModel.find(query).sort({ updatedAt: -1 }).limit(limit).lean();
             logger.info({ collection, count, picked: docs.length }, 'Collection overview');
-            for (const doc of docs) logger.info({ Id: doc.Id, Code: doc.Code, Name: doc.Name, LastUpdatedDate: doc.LastUpdatedDate, keys: Object.keys(doc).slice(0, 30) }, 'Supplier sample');
+            for (const doc of docs) logger.info({ Code: doc.Code, Name: doc.Name, keys: Object.keys(doc).slice(0, 30) }, 'Supplier sample');
         } else if (collection === 'invoices') {
             const count = await InvoiceModel.countDocuments();
             const query: any = number ? { Number: number } : {};

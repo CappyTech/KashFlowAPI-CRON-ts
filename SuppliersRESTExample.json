@@ -1,0 +1,60 @@
+{
+    "Address": {
+        "Line1": "Line1",
+        "Line2": "Line2",
+        "Line3": "Line3",
+        "Line4": "Line4",
+        "PostCode": "ABCDEF"
+    },
+    "ApplyWithholdingTax": false,
+    "BankAccount": {
+        "Name": "Current Account",
+        "Number": "1234",
+        "SortCode": "VF324"
+    },
+    "BilledNetAmount": 15.0000,
+    "BilledVatAmount": 2.2500,
+    "Code": "424201",
+    "Contacts": [{
+        "Email": "example@example.com",
+        "Fax": "12345677",
+        "Firstname": "Adam",
+        "LastName": "Taylor",
+        "Mobile": "123456789",
+        "Name": "A G Taylor",
+        "Telephone": "123456789",
+        "Title": "Mr.",
+        "Website": "example.com"
+    }],
+    "CreatedDate": "2013-10-17 12:00:00",
+    "Currency": {
+        "Code": "EUR",
+        "DisplaySymbolOnRight": false,
+        "ExchangeRate": 1.0000,
+        "Name": "Euros",
+        "Symbol": "€"
+    },
+    "DefaultPdfTheme": 0,
+    "DefaultNominalCode": 5000,
+    "FirstPurchaseDate": "2013-11-11 12:00:00",
+    "Id": 2467871,
+    "IsArchived": false,
+    "IsRegisteredInEC": false,
+    "LastPurchaseDate": "2013-11-11 12:00:00",
+    "LastUpdatedDate": "2013-10-17 12:00:00",
+    "Name": "Supplier Adam",
+    "Note": "",
+    "OutstandingBalance": 17.2500,
+    "PaymentMethod": 0,
+    "PaymentTerms": {
+        "Days": 30,
+        "Type": "AfterIssuedDate"
+    },
+    "CreateSupplierCodeIfDuplicate" : false,
+    "CreateSupplierNameIfEmptyOrNull" : false,
+    "TotalPaidAmount": 0.0000,
+    "UniqueEntityNumber": "",
+    "VatNumber": "",
+    "WithholdingTaxRate": -1.0000,
+    "WithholdingTaxReferences": null
+}

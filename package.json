@@ -36,6 +36,7 @@
     "p-retry": "^6.2.1",
     "pino": "^9.8.0",
     "pino-pretty": "^13.1.1",
-    "tunnel-ssh": "^5.2.0"
+    "tunnel-ssh": "^5.2.0",
+    "uuid": "^11.1.0"
   }
 }

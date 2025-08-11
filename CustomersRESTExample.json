@@ -1,0 +1,117 @@
+{
+    "ApplyWHT": true,
+    "AutoIncludeVATNumber": false,
+    "AverageDaysToPay": 83,
+    "Code": "PDRI91",
+    "Contacts": [{
+            "Email": "test@testtrick.com",
+            "Fax": null,
+            "Firstname": null,
+            "LastName": null,
+            "Mobile": null,
+            "Name": null,
+            "Telephone": null,
+            "Title": null,
+            "Website": ""
+    }],
+    "CreatedDate": "2013-02-05 12:00:00 +05:30",
+    "Currency": {
+        "Code": "GBP",
+        "ExchangeRate": 1.0000,
+        "DisplayOnRight": false,
+        "Name": "British Pounds",
+        "Symbol": "£"
+    },
+    "CustomCheckBoxes": [{
+        "Name": "FirstCheckbox",
+        "Value": "1"
+    }, {
+        "Name": "SecondCheckbox",
+        "Value": "1"
+    }, {
+        "Name": "ThirdCheckBox",
+        "Value": "1"
+    }],
+    "CustomTextBoxes": [{
+        "Name": "FirstName",
+        "Value": "kjhkjh"
+    }, {
+        "Name": "LastName",
+        "Value": "kjhkjh"
+    }],
+    "Addresses": [{
+        "Line1": "1 Ashwood Close",
+        "Line2": "Branton",
+        "Line3": "Doncaster, South Yorkshire",
+        "Line4": "GB",
+        "PostCode": "DN3 3UB",
+        "CountryCode": "GB",
+        "CountryName": "United Kingdom"
+    }],
+    "DefaultNominalCode": 1,
+    "DefaultCustomerReference": "",
+    "DeliveryAddresses": [{
+        "Line1": "1 Ashwood Close",
+        "Line2": "Branton",
+        "Line3": "Doncaster, South Yorkshire",
+        "Line4": "GB",
+        "PostCode": "DN3 3UB",
+        "CountryCode": "GB",
+        "CountryName": "United Kingdom"
+    }],
+    "DiscountRate": 0.0000,
+    "DisplayName": "дравс дравс др, DN3 3UB",
+    "IsRegisteredInEC": false,
+    "Email": "",
+    "EmailTemplateNumber": 6,
+    "FaxNumber": "",
+    "FirstInvoiceDate": "1900-01-01 12:00:00 +05:30",
+    "UseCustomDeliveryAddress": true,
+    "Id": 10535,
+    "InvoiceCount": 0,
+    "InvoiceFileFormat": "test",
+    "InvoicedNetAmount": 0,
+    "InvoicedVATAmount": 0,
+    "IsArchived": false,
+    "IsGoCardlessMandateSet": true,
+    "ReceivesWholesalePricing": false,
+    "Key": "a397a2e9-87f3-48ca-9bd0-1ad64585c0eb",
+    "LastInvoiceDate": "1900-01-01 12:00:00 +05:30",
+    "LastUpdatedDate": "2013-02-05 12:00:00 +05:30",
+    "MobileNumber": "",
+    "Name": "дравс дравс др",
+    "Note": "test note",
+    "OutstandingBalance": 0.0000,
+    "IsRegisteredOutsideEC": false,
+    "OverrideInvoiceFileFormat": true,
+    "PaymentTerms": {
+        "Days": 50,
+        "Type": "AfterMonthEnd"
+    },
+    "CreateCustomerCodeIfDuplicate" : false,  
+    "CreateCustomerNameIfEmptyOrNull" : false,
+    "TotalPaidAmount": 0,
+    "ShowDiscount": false,
+    "Source": 43400,
+    "TelephoneNumber": "",
+    "UniqueEntityNumber": "",
+    "VATNumber": "",
+    "Website": "",
+    "WHTRate": 12.0000,
+    "WHTReferences": [{
+        "Name": "UTR No",
+        "Value": "321"
+    }, {
+        "Name": "Company Reg. Number",
+        "Value": "333"
+    }, {
+        "Name": "NI number",
+        "Value": "5555"
+    }, {
+        "Name": "Verification Number",
+        "Value": "55533"
+    }],
+    "AutomaticCreditControlEnabled": false,
+    "EnvelopeUrl": "/v2/documents/customers/c91b10ad-1ec8-40c8-8e8b-839fbbc3055b",
+    "PDFThemeId": 456
+}

@@ -1,0 +1,22 @@
+{
+    "ActualJournalsAmount": 0.0000,
+    "ActualPurchasesAmount": 1200.0000,
+    "ActualSalesAmount": 0.0000,
+    "CustomerCode": "DARK01",
+    "CustomerName": "Dark Knight",
+    "Description": "Dark Knight Project", 
+    "EndDate": "2012-10-10 12:00:00 +05:30",  
+    "AssociatedQuotesCount": 13, 
+    "ExcludeVAT": 0, 
+    "Name": "Dark Knight Project 1", 
+    "Note": "", 
+    "Number": 4, 
+    "Reference": "Dark Knight Reference", 
+    "StartDate": "2012-10-09 12:00:00 +05:30", 
+    "Status": 1, "StatusName": 
+    "Active", "TargetPurchasesAmount": 800.0000, 
+    "TargetSalesAmount": 1000.0000, 
+    "ActualPurchasesVATAmount": 200.0000, 
+    "ActualSalesVATAmount": 0.0000, 
+    "WorkInProgressAmount": 1500.00000
+}

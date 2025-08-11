@@ -60,7 +60,7 @@ export const config = {
 
         metrics: {
             enabled: bool(process.env.METRICS_ENABLED, true),
-            port: parseInt(process.env.METRICS_PORT || '3000', 10),
+            port: parseInt(process.env.PORT || process.env.METRICS_PORT || '3000', 10)
         },
 };
 
