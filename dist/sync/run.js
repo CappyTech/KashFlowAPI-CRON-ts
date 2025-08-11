@@ -94,7 +94,7 @@ export async function runSync() {
                     const res = await CustomerModel.updateOne({ Code: c.Code }, {
                         $set: updateDoc,
                         $setOnInsert: { createdAt: new Date(), deletedAt: null },
-                    }, { upsert: true });
+                    }, { upsert: true, setDefaultsOnInsert: true });
                     // @ts-ignore driver compat
                     const wasInserted = res.upsertedCount === 1 || (Array.isArray(res.upsertedIds) && res.upsertedIds.length > 0) || !!res.upsertedId;
                     if (wasInserted)
@@ -182,7 +182,7 @@ export async function runSync() {
                     const existingSup = await SupplierModel.findOne({ Code: s.Code }).lean();
                     const updateSup = { ...s, LastUpdatedDate: s.LastUpdatedDate ? new Date(s.LastUpdatedDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdSup };
                     const { changedFields: changedFieldsSup, changes: changesSup } = diffDocs(existingSup, updateSup);
-                    const res = await SupplierModel.updateOne({ Code: s.Code }, { $set: updateSup, $setOnInsert: { createdAt: new Date(), deletedAt: null } }, { upsert: true });
+                    const res = await SupplierModel.updateOne({ Code: s.Code }, { $set: updateSup, $setOnInsert: { createdAt: new Date(), deletedAt: null } }, { upsert: true, setDefaultsOnInsert: true });
                     // @ts-ignore
                     const wasInserted = res.upsertedCount === 1 || (Array.isArray(res.upsertedIds) && res.upsertedIds.length > 0) || !!res.upsertedId;
                     if (wasInserted)
@@ -291,7 +291,7 @@ export async function runSync() {
                     const existingInv = await InvoiceModel.findOne({ Number: i.Number }).lean();
                     const updateInv = { ...i, IssuedDate: i.IssuedDate ? new Date(i.IssuedDate) : undefined, DueDate: i.DueDate ? new Date(i.DueDate) : undefined, LastPaymentDate: i.LastPaymentDate ? new Date(i.LastPaymentDate) : i.LastPaymentDate, PaidDate: i.PaidDate ? new Date(i.PaidDate) : i.PaidDate, updatedAt: new Date(), lastSeenRun: runIdInv };
                     const { changedFields: changedFieldsInv, changes: changesInv } = diffDocs(existingInv, updateInv);
-                    const res = await InvoiceModel.updateOne({ Number: i.Number }, { $set: updateInv, $setOnInsert: { createdAt: new Date(), deletedAt: null, uuid: `invoice:${i.Number}` } }, { upsert: true });
+                    const res = await InvoiceModel.updateOne({ Number: i.Number }, { $set: updateInv, $setOnInsert: { createdAt: new Date(), deletedAt: null, uuid: `invoice:${i.Number}` } }, { upsert: true, setDefaultsOnInsert: true });
                     upsertedInv += 1;
                     try { // @ts-ignore
                         const wasInserted = res.upsertedCount === 1 || !!res.upsertedId;
@@ -359,7 +359,7 @@ export async function runSync() {
                     const existingQ = await QuoteModel.findOne({ Number: q.Number }).lean();
                     const updateQ = { ...q, Date: q.Date ? new Date(q.Date) : undefined, updatedAt: new Date(), lastSeenRun: runIdQ };
                     const { changedFields: changedFieldsQ, changes: changesQ } = diffDocs(existingQ, updateQ);
-                    const res = await QuoteModel.updateOne({ Number: q.Number }, { $set: updateQ, $setOnInsert: { createdAt: new Date(), deletedAt: null } }, { upsert: true });
+                    const res = await QuoteModel.updateOne({ Number: q.Number }, { $set: updateQ, $setOnInsert: { createdAt: new Date(), deletedAt: null } }, { upsert: true, setDefaultsOnInsert: true });
                     upsertedQ += 1;
                     try { // @ts-ignore
                         const wasInserted = res.upsertedCount === 1 || !!res.upsertedId;
@@ -428,7 +428,7 @@ export async function runSync() {
                     const existingPj = await ProjectModel.findOne({ Number: pj.Number }).lean();
                     const updatePj = { ...pj, StartDate: pj.StartDate ? new Date(pj.StartDate) : undefined, EndDate: pj.EndDate ? new Date(pj.EndDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdPj };
                     const { changedFields: changedFieldsPj, changes: changesPj } = diffDocs(existingPj, updatePj);
-                    const res = await ProjectModel.updateOne({ Number: pj.Number }, { $set: updatePj, $setOnInsert: { createdAt: new Date(), deletedAt: null } }, { upsert: true });
+                    const res = await ProjectModel.updateOne({ Number: pj.Number }, { $set: updatePj, $setOnInsert: { createdAt: new Date(), deletedAt: null } }, { upsert: true, setDefaultsOnInsert: true });
                     upsertedPj += 1;
                     try { // @ts-ignore
                         const wasInserted = res.upsertedCount === 1 || !!res.upsertedId;
@@ -511,7 +511,7 @@ export async function runSync() {
                     const existingPur = await PurchaseModel.findOne({ Number: p.Number }).lean();
                     const updatePurDoc = { ...p, IssuedDate: p.IssuedDate ? new Date(p.IssuedDate) : undefined, DueDate: p.DueDate ? new Date(p.DueDate) : undefined, PaidDate: p.PaidDate ? new Date(p.PaidDate) : p.PaidDate, updatedAt: new Date(), lastSeenRun: runIdPur };
                     const { changedFields: changedFieldsPur, changes: changesPur } = diffDocs(existingPur, updatePurDoc);
-                    const res = await PurchaseModel.updateOne({ Number: p.Number }, { $set: updatePurDoc, $setOnInsert: { createdAt: new Date(), deletedAt: null } }, { upsert: true });
+                    const res = await PurchaseModel.updateOne({ Number: p.Number }, { $set: updatePurDoc, $setOnInsert: { createdAt: new Date(), deletedAt: null } }, { upsert: true, setDefaultsOnInsert: true });
                     // @ts-ignore
                     const wasInserted = res.upsertedCount === 1 || !!res.upsertedId;
                     upsertedPur += 1;

@@ -33,6 +33,10 @@ export function startMetricsServer() {
     // HTTP Basic Auth for all endpoints
     const user = config.metrics.authUser;
     const pass = config.metrics.authPass;
+    // Health endpoint (no auth) for container orchestration
+    if (req.url === '/health') {
+      res.statusCode = 200; return res.end('ok');
+    }
     if (user && pass) {
       const auth = req.headers['authorization'];
       if (!auth || !auth.startsWith('Basic ')) {

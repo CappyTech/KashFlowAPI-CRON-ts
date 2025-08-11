@@ -30,6 +30,29 @@ function human(ms) {
 }
 export function startMetricsServer() {
     const server = http.createServer((req, res) => {
+        // HTTP Basic Auth for all endpoints
+        const user = config.metrics.authUser;
+        const pass = config.metrics.authPass;
+        if (user && pass) {
+            const auth = req.headers['authorization'];
+            if (!auth || !auth.startsWith('Basic ')) {
+                res.statusCode = 401;
+                res.setHeader('WWW-Authenticate', 'Basic realm="Metrics"');
+                return res.end('Authentication required');
+            }
+            const b64 = auth.split(' ')[1];
+            let decoded = '';
+            try {
+                decoded = Buffer.from(b64, 'base64').toString();
+            }
+            catch { }
+            const [u, p] = decoded.split(':');
+            if (u !== user || p !== pass) {
+                res.statusCode = 401;
+                res.setHeader('WWW-Authenticate', 'Basic realm="Metrics"');
+                return res.end('Invalid credentials');
+            }
+        }
         if (!req.url) {
             res.statusCode = 400;
             return res.end('Bad request');

@@ -96,7 +96,7 @@ export async function runSync() {
                             $set: updateDoc,
                             $setOnInsert: { createdAt: new Date(), deletedAt: null },
                         },
-                        { upsert: true }
+                        { upsert: true, setDefaultsOnInsert: true }
                     );
                     // @ts-ignore driver compat
                     const wasInserted = res.upsertedCount === 1 || (Array.isArray(res.upsertedIds) && res.upsertedIds.length > 0) || !!res.upsertedId;
@@ -184,7 +184,7 @@ export async function runSync() {
                     const res = await SupplierModel.updateOne(
                         { Code: s.Code },
                         { $set: updateSup, $setOnInsert: { createdAt: new Date(), deletedAt: null } },
-                        { upsert: true }
+                        { upsert: true, setDefaultsOnInsert: true }
                     );
                     // @ts-ignore
                     const wasInserted = res.upsertedCount === 1 || (Array.isArray(res.upsertedIds) && res.upsertedIds.length > 0) || !!res.upsertedId;
@@ -286,7 +286,7 @@ export async function runSync() {
                     const res = await InvoiceModel.updateOne(
                         { Number: i.Number },
                         { $set: updateInv, $setOnInsert: { createdAt: new Date(), deletedAt: null, uuid: `invoice:${i.Number}` } },
-                        { upsert: true }
+                        { upsert: true, setDefaultsOnInsert: true }
                     );
                     upsertedInv += 1;
                     try { // @ts-ignore
@@ -345,7 +345,7 @@ export async function runSync() {
                     const res = await QuoteModel.updateOne(
                         { Number: q.Number },
                         { $set: updateQ, $setOnInsert: { createdAt: new Date(), deletedAt: null } },
-                        { upsert: true }
+                        { upsert: true, setDefaultsOnInsert: true }
                     );
                     upsertedQ += 1;
                     try { // @ts-ignore
@@ -405,7 +405,7 @@ export async function runSync() {
                     const res = await ProjectModel.updateOne(
                         { Number: pj.Number },
                         { $set: updatePj, $setOnInsert: { createdAt: new Date(), deletedAt: null } },
-                        { upsert: true }
+                        { upsert: true, setDefaultsOnInsert: true }
                     );
                     upsertedPj += 1;
                     try { // @ts-ignore
@@ -472,7 +472,7 @@ export async function runSync() {
                     const res = await PurchaseModel.updateOne(
                         { Number: p.Number },
                         { $set: updatePurDoc, $setOnInsert: { createdAt: new Date(), deletedAt: null } },
-                        { upsert: true }
+                        { upsert: true, setDefaultsOnInsert: true }
                     );
                     // @ts-ignore
                     const wasInserted = res.upsertedCount === 1 || !!res.upsertedId;
