@@ -67,7 +67,8 @@ export const config = {
         enabled: bool(process.env.METRICS_ENABLED, true),
         port: parseInt(process.env.PORT || process.env.METRICS_PORT || '3000', 10),
         authUser: process.env.METRICS_AUTH_USER,
-        authPass: process.env.METRICS_AUTH_PASS
+    authPass: process.env.METRICS_AUTH_PASS,
+    allowRemoteTrigger: bool(process.env.METRICS_ALLOW_REMOTE_TRIGGER, false),
     },
 };
 // If any required variables were missing, throw one combined error now.
