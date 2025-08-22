@@ -14,26 +14,42 @@ import { SyncSummaryModel } from '../db/models.js';
 const mutex = new Mutex();
 const DIFF_FIELD_LIMIT = 40;
 function diffDocs(before, after) {
-    if (!before)
-        return { changedFields: Object.keys(after || {}).slice(0, DIFF_FIELD_LIMIT), changes: Object.fromEntries(Object.entries(after || {}).slice(0, DIFF_FIELD_LIMIT).map(([k, v]) => [k, { before: undefined, after: v }])) };
+    if (!after)
+        return { changedFields: [], changes: {} };
+    if (!before) {
+        const keys = Object.keys(after).slice(0, DIFF_FIELD_LIMIT);
+        return {
+            changedFields: keys,
+            changes: Object.fromEntries(keys.map(k => [k, { before: undefined, after: after[k] }]))
+        };
+    }
     const changedFields = [];
     const changes = {};
-    const keys = new Set([...Object.keys(before), ...Object.keys(after || {})]);
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
     for (const k of keys) {
         // Skip volatile / metadata fields we don't want to treat as business diffs
         if (['updatedAt', 'createdAt', 'deletedAt', 'lastSeenRun', '_id', '__v'].includes(k))
             continue;
-        // Also skip other underscore-prefixed housekeeping keys (defensive)
-        if (k.startsWith('_') && !(['_id', '__v'].includes(k) === false))
+        // Skip other underscore-prefixed housekeeping keys (excluding _id/__v already handled above)
+        if (k.startsWith('_') && !['_id', '__v'].includes(k))
             continue;
         const bv = before[k];
         const av = after[k];
-        if (JSON.stringify(bv) !== JSON.stringify(av)) {
-            changedFields.push(k);
-            if (changedFields.length >= DIFF_FIELD_LIMIT)
-                break;
-            changes[k] = { before: bv, after: av };
+        // Fast path primitive / reference equality first
+        if (bv === av)
+            continue;
+        // Fallback deep-ish compare via JSON for simple serialisable values
+        try {
+            if (JSON.stringify(bv) === JSON.stringify(av))
+                continue;
         }
+        catch { /* ignore stringify issues and treat as changed */ }
+        changedFields.push(k);
+        if (changedFields.length >= DIFF_FIELD_LIMIT) {
+            changes[k] = { before: bv, after: av }; // capture last triggering field
+            break;
+        }
+        changes[k] = { before: bv, after: av };
     }
     return { changedFields, changes };
 }
@@ -90,23 +106,28 @@ export async function runSync() {
                         updatedAt: new Date(),
                         lastSeenRun: runIdCustomers,
                     };
+                    // Preserve uuid so diffDocs doesn't treat it as removed
+                    if (existing?.uuid)
+                        updateDoc.uuid = existing.uuid;
                     const { changedFields, changes } = diffDocs(existing, updateDoc);
                     const res = await CustomerModel.updateOne({ Code: c.Code }, {
                         $set: updateDoc,
                         $setOnInsert: { createdAt: new Date(), deletedAt: null },
                     }, { upsert: true, setDefaultsOnInsert: true });
-                    // @ts-ignore driver compat
-                    const wasInserted = res.upsertedCount === 1 || (Array.isArray(res.upsertedIds) && res.upsertedIds.length > 0) || !!res.upsertedId;
+                    const r1 = res;
+                    const wasInserted = r1.upsertedCount === 1 || (Array.isArray(r1.upsertedIds) && r1.upsertedIds.length > 0) || !!r1.upsertedId;
                     if (wasInserted)
                         upsertedCust += 1;
                     else if (res.modifiedCount)
                         upsertedCust += 1; // treat modifications as upserts for count visibility
-                    try {
-                        await UpsertLogModel.create({ entity: 'customers', key: c.Code, op: wasInserted ? 'insert' : 'update', runId: runIdCustomers, modifiedCount: res.modifiedCount, upsertedId: res.upsertedId, changedFields, changes });
-                    }
-                    catch (e) {
-                        if (config.flags.upsertLogs)
-                            logger.debug({ err: e }, 'Failed to write customer upsert log');
+                    if (wasInserted || changedFields.length > 0) {
+                        try {
+                            await UpsertLogModel.create({ entity: 'customers', key: c.Code, op: wasInserted ? 'insert' : 'update', runId: runIdCustomers, modifiedCount: res.modifiedCount, upsertedId: res.upsertedId, changedFields, changes });
+                        }
+                        catch (e) {
+                            if (config.flags.upsertLogs)
+                                logger.debug({ err: e }, 'Failed to write customer upsert log');
+                        }
                     }
                     if (config.flags.upsertLogs) {
                         logger.debug({ entity: 'customers', code: c.Code, wasInserted, modifiedCount: res.modifiedCount }, 'Customer upsert');
@@ -131,8 +152,8 @@ export async function runSync() {
             }
             if (fetchedCust > 0 && completedFullCust) {
                 const resSD = await CustomerModel.updateMany({ $or: [{ lastSeenRun: { $ne: runIdCustomers } }, { lastSeenRun: { $exists: false } }], deletedAt: null }, { $set: { deletedAt: new Date(), updatedAt: new Date() } });
-                // @ts-ignore Mongo driver returns modifiedCount
-                softDeletedCust = (resSD && (resSD.modifiedCount ?? 0));
+                const rSD = resSD;
+                softDeletedCust = (rSD && (rSD.modifiedCount ?? 0));
             }
             const custMs = Date.now() - custStart;
             logger.info({ pages: pagesCust, fetched: fetchedCust, processed: fetchedCust, upserted: upsertedCust, total: totalCust, softDeleted: softDeletedCust, ms: custMs }, 'Customers sync completed');
@@ -181,20 +202,24 @@ export async function runSync() {
                 for (const s of items) {
                     const existingSup = await SupplierModel.findOne({ Code: s.Code }).lean();
                     const updateSup = { ...s, LastUpdatedDate: s.LastUpdatedDate ? new Date(s.LastUpdatedDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdSup };
+                    if (existingSup?.uuid)
+                        updateSup.uuid = existingSup.uuid;
                     const { changedFields: changedFieldsSup, changes: changesSup } = diffDocs(existingSup, updateSup);
                     const res = await SupplierModel.updateOne({ Code: s.Code }, { $set: updateSup, $setOnInsert: { createdAt: new Date(), deletedAt: null } }, { upsert: true, setDefaultsOnInsert: true });
-                    // @ts-ignore
-                    const wasInserted = res.upsertedCount === 1 || (Array.isArray(res.upsertedIds) && res.upsertedIds.length > 0) || !!res.upsertedId;
+                    const r2 = res;
+                    const wasInserted = r2.upsertedCount === 1 || (Array.isArray(r2.upsertedIds) && r2.upsertedIds.length > 0) || !!r2.upsertedId;
                     if (wasInserted)
                         upsertedSupCount += 1;
                     else if (res.modifiedCount)
                         upsertedSupCount += 1;
-                    try {
-                        await UpsertLogModel.create({ entity: 'suppliers', key: s.Code, op: wasInserted ? 'insert' : 'update', runId: runIdSup, modifiedCount: res.modifiedCount, upsertedId: res.upsertedId, changedFields: changedFieldsSup, changes: changesSup });
-                    }
-                    catch (e) {
-                        if (config.flags.upsertLogs)
-                            logger.debug({ err: e }, 'Failed to write supplier upsert log');
+                    if (wasInserted || changedFieldsSup.length > 0) {
+                        try {
+                            await UpsertLogModel.create({ entity: 'suppliers', key: s.Code, op: wasInserted ? 'insert' : 'update', runId: runIdSup, modifiedCount: res.modifiedCount, upsertedId: res.upsertedId, changedFields: changedFieldsSup, changes: changesSup });
+                        }
+                        catch (e) {
+                            if (config.flags.upsertLogs)
+                                logger.debug({ err: e }, 'Failed to write supplier upsert log');
+                        }
                     }
                     if (config.flags.upsertLogs) {
                         logger.debug({ entity: 'suppliers', code: s.Code, wasInserted, modifiedCount: res.modifiedCount }, 'Supplier upsert');
@@ -236,8 +261,8 @@ export async function runSync() {
             }
             if (fetchedSup > 0 && completedFullSup) {
                 const resSD = await SupplierModel.updateMany({ $or: [{ lastSeenRun: { $ne: runIdSup } }, { lastSeenRun: { $exists: false } }], deletedAt: null }, { $set: { deletedAt: new Date(), updatedAt: new Date() } });
-                // @ts-ignore
-                softDeletedSup = (resSD && (resSD.modifiedCount ?? 0));
+                const rSupSD = resSD;
+                softDeletedSup = (rSupSD && (rSupSD.modifiedCount ?? 0));
             }
             const supMs = Date.now() - supStart;
             logger.info({ pages: pagesSup, fetched: fetchedSup, processed: fetchedSup, upserted: upsertedSupCount, total: totalSup, softDeleted: softDeletedSup, ms: supMs }, 'Suppliers sync completed');
@@ -290,12 +315,19 @@ export async function runSync() {
                     }
                     const existingInv = await InvoiceModel.findOne({ Number: i.Number }).lean();
                     const updateInv = { ...i, IssuedDate: i.IssuedDate ? new Date(i.IssuedDate) : undefined, DueDate: i.DueDate ? new Date(i.DueDate) : undefined, LastPaymentDate: i.LastPaymentDate ? new Date(i.LastPaymentDate) : i.LastPaymentDate, PaidDate: i.PaidDate ? new Date(i.PaidDate) : i.PaidDate, updatedAt: new Date(), lastSeenRun: runIdInv };
+                    if (existingInv?.uuid)
+                        updateInv.uuid = existingInv.uuid;
+                    else
+                        updateInv.uuid = `invoice:${i.Number}`; // match $setOnInsert for diff visibility
                     const { changedFields: changedFieldsInv, changes: changesInv } = diffDocs(existingInv, updateInv);
                     const res = await InvoiceModel.updateOne({ Number: i.Number }, { $set: updateInv, $setOnInsert: { createdAt: new Date(), deletedAt: null, uuid: `invoice:${i.Number}` } }, { upsert: true, setDefaultsOnInsert: true });
                     upsertedInv += 1;
-                    try { // @ts-ignore
-                        const wasInserted = res.upsertedCount === 1 || !!res.upsertedId;
-                        await UpsertLogModel.create({ entity: 'invoices', key: String(i.Number), op: wasInserted ? 'insert' : 'update', runId: runIdInv, modifiedCount: res.modifiedCount, upsertedId: res.upsertedId, changedFields: changedFieldsInv, changes: changesInv });
+                    try {
+                        const rInv = res;
+                        const wasInserted = rInv.upsertedCount === 1 || !!rInv.upsertedId;
+                        if (wasInserted || changedFieldsInv.length > 0) {
+                            await UpsertLogModel.create({ entity: 'invoices', key: String(i.Number), op: wasInserted ? 'insert' : 'update', runId: runIdInv, modifiedCount: rInv.modifiedCount, upsertedId: rInv.upsertedId, changedFields: changedFieldsInv, changes: changesInv });
+                        }
                     }
                     catch (e) {
                         if (config.flags.upsertLogs)
@@ -317,8 +349,8 @@ export async function runSync() {
             let softDeletedInv = 0;
             if (doFullRefreshIncrementals && config.flags.incrementalSoftDelete) {
                 const resSD = await InvoiceModel.updateMany({ $or: [{ lastSeenRun: { $ne: runIdInv } }, { lastSeenRun: { $exists: false } }], deletedAt: null }, { $set: { deletedAt: new Date(), updatedAt: new Date() } });
-                // @ts-ignore
-                softDeletedInv = (resSD && (resSD.modifiedCount ?? 0));
+                const rInvSD = resSD;
+                softDeletedInv = (rInvSD && (rInvSD.modifiedCount ?? 0));
             }
             const invMs = Date.now() - invStart;
             logger.info({ pages: pagesInv, fetched: fetchedInv, upserted: upsertedInv, total: totalInv, lastMax: lastMaxInv, newMax: newMaxInv, reachedOld: reachedOldInv, stoppedReason: stoppedReasonInv, softDeleted: softDeletedInv, fullRefresh: doFullRefreshIncrementals, ms: invMs }, 'Invoices sync completed (incremental)');
@@ -358,12 +390,17 @@ export async function runSync() {
                     }
                     const existingQ = await QuoteModel.findOne({ Number: q.Number }).lean();
                     const updateQ = { ...q, Date: q.Date ? new Date(q.Date) : undefined, updatedAt: new Date(), lastSeenRun: runIdQ };
+                    if (existingQ?.uuid)
+                        updateQ.uuid = existingQ.uuid;
                     const { changedFields: changedFieldsQ, changes: changesQ } = diffDocs(existingQ, updateQ);
                     const res = await QuoteModel.updateOne({ Number: q.Number }, { $set: updateQ, $setOnInsert: { createdAt: new Date(), deletedAt: null } }, { upsert: true, setDefaultsOnInsert: true });
                     upsertedQ += 1;
-                    try { // @ts-ignore
-                        const wasInserted = res.upsertedCount === 1 || !!res.upsertedId;
-                        await UpsertLogModel.create({ entity: 'quotes', key: String(q.Number), op: wasInserted ? 'insert' : 'update', runId: runIdQ, modifiedCount: res.modifiedCount, upsertedId: res.upsertedId, changedFields: changedFieldsQ, changes: changesQ });
+                    try {
+                        const rQ = res;
+                        const wasInserted = rQ.upsertedCount === 1 || !!rQ.upsertedId;
+                        if (wasInserted || changedFieldsQ.length > 0) {
+                            await UpsertLogModel.create({ entity: 'quotes', key: String(q.Number), op: wasInserted ? 'insert' : 'update', runId: runIdQ, modifiedCount: rQ.modifiedCount, upsertedId: rQ.upsertedId, changedFields: changedFieldsQ, changes: changesQ });
+                        }
                     }
                     catch (e) {
                         if (config.flags.upsertLogs)
@@ -385,8 +422,8 @@ export async function runSync() {
             let softDeletedQ = 0;
             if (doFullRefreshIncrementals && config.flags.incrementalSoftDelete) {
                 const resSD = await QuoteModel.updateMany({ $or: [{ lastSeenRun: { $ne: runIdQ } }, { lastSeenRun: { $exists: false } }], deletedAt: null }, { $set: { deletedAt: new Date(), updatedAt: new Date() } });
-                // @ts-ignore
-                softDeletedQ = (resSD && (resSD.modifiedCount ?? 0));
+                const rQSD = resSD;
+                softDeletedQ = (rQSD && (rQSD.modifiedCount ?? 0));
             }
             const qMs = Date.now() - qStart;
             logger.info({ pages: pagesQ, fetched: fetchedQ, upserted: upsertedQ, total: totalQ, lastMax: lastMaxQ, newMax: newMaxQ, reachedOld: reachedOldQ, stoppedReason: stoppedReasonQ, softDeleted: softDeletedQ, fullRefresh: doFullRefreshIncrementals, ms: qMs }, 'Quotes sync completed (incremental)');
@@ -427,12 +464,17 @@ export async function runSync() {
                     }
                     const existingPj = await ProjectModel.findOne({ Number: pj.Number }).lean();
                     const updatePj = { ...pj, StartDate: pj.StartDate ? new Date(pj.StartDate) : undefined, EndDate: pj.EndDate ? new Date(pj.EndDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdPj };
+                    if (existingPj?.uuid)
+                        updatePj.uuid = existingPj.uuid;
                     const { changedFields: changedFieldsPj, changes: changesPj } = diffDocs(existingPj, updatePj);
                     const res = await ProjectModel.updateOne({ Number: pj.Number }, { $set: updatePj, $setOnInsert: { createdAt: new Date(), deletedAt: null } }, { upsert: true, setDefaultsOnInsert: true });
                     upsertedPj += 1;
-                    try { // @ts-ignore
-                        const wasInserted = res.upsertedCount === 1 || !!res.upsertedId;
-                        await UpsertLogModel.create({ entity: 'projects', key: String(pj.Number), op: wasInserted ? 'insert' : 'update', runId: runIdPj, modifiedCount: res.modifiedCount, upsertedId: res.upsertedId, changedFields: changedFieldsPj, changes: changesPj });
+                    try {
+                        const rPj = res;
+                        const wasInserted = rPj.upsertedCount === 1 || !!rPj.upsertedId;
+                        if (wasInserted || changedFieldsPj.length > 0) {
+                            await UpsertLogModel.create({ entity: 'projects', key: String(pj.Number), op: wasInserted ? 'insert' : 'update', runId: runIdPj, modifiedCount: rPj.modifiedCount, upsertedId: rPj.upsertedId, changedFields: changedFieldsPj, changes: changesPj });
+                        }
                     }
                     catch (e) {
                         if (config.flags.upsertLogs)
@@ -468,8 +510,8 @@ export async function runSync() {
             let softDeletedPj = 0;
             if (doFullRefreshIncrementals && config.flags.incrementalSoftDelete) {
                 const resSD = await ProjectModel.updateMany({ $or: [{ lastSeenRun: { $ne: runIdPj } }, { lastSeenRun: { $exists: false } }], deletedAt: null }, { $set: { deletedAt: new Date(), updatedAt: new Date() } });
-                // @ts-ignore
-                softDeletedPj = (resSD && (resSD.modifiedCount ?? 0));
+                const rPjSD = resSD;
+                softDeletedPj = (rPjSD && (rPjSD.modifiedCount ?? 0));
             }
             const pjMs = Date.now() - pjStart;
             logger.info({ pages: pagesPj, fetched: fetchedPj, upserted: upsertedPj, total: totalPj, lastMax: lastMaxPj, newMax: newMaxPj, reachedOld: reachedOldPj, stoppedReason: stoppedReasonPj, unpaged: unpagedPj, softDeleted: softDeletedPj, fullRefresh: doFullRefreshIncrementals, ms: pjMs }, 'Projects sync completed (incremental)');
@@ -510,13 +552,17 @@ export async function runSync() {
                     }
                     const existingPur = await PurchaseModel.findOne({ Number: p.Number }).lean();
                     const updatePurDoc = { ...p, IssuedDate: p.IssuedDate ? new Date(p.IssuedDate) : undefined, DueDate: p.DueDate ? new Date(p.DueDate) : undefined, PaidDate: p.PaidDate ? new Date(p.PaidDate) : p.PaidDate, updatedAt: new Date(), lastSeenRun: runIdPur };
+                    if (existingPur?.uuid)
+                        updatePurDoc.uuid = existingPur.uuid;
                     const { changedFields: changedFieldsPur, changes: changesPur } = diffDocs(existingPur, updatePurDoc);
                     const res = await PurchaseModel.updateOne({ Number: p.Number }, { $set: updatePurDoc, $setOnInsert: { createdAt: new Date(), deletedAt: null } }, { upsert: true, setDefaultsOnInsert: true });
-                    // @ts-ignore
-                    const wasInserted = res.upsertedCount === 1 || !!res.upsertedId;
+                    const rPur = res;
+                    const wasInserted = rPur.upsertedCount === 1 || !!rPur.upsertedId;
                     upsertedPur += 1;
                     try {
-                        await UpsertLogModel.create({ entity: 'purchases', key: String(p.Number), op: wasInserted ? 'insert' : 'update', runId: runIdPur, modifiedCount: res.modifiedCount, upsertedId: res.upsertedId, changedFields: changedFieldsPur, changes: changesPur });
+                        if (wasInserted || changedFieldsPur.length > 0) {
+                            await UpsertLogModel.create({ entity: 'purchases', key: String(p.Number), op: wasInserted ? 'insert' : 'update', runId: runIdPur, modifiedCount: res.modifiedCount, upsertedId: res.upsertedId, changedFields: changedFieldsPur, changes: changesPur });
+                        }
                     }
                     catch (e) {
                         if (config.flags.upsertLogs)
@@ -539,8 +585,8 @@ export async function runSync() {
             let softDeletedPur = 0;
             if (doFullRefreshIncrementals && config.flags.incrementalSoftDelete) {
                 const resSD = await PurchaseModel.updateMany({ $or: [{ lastSeenRun: { $ne: runIdPur } }, { lastSeenRun: { $exists: false } }], deletedAt: null }, { $set: { deletedAt: new Date(), updatedAt: new Date() } });
-                // @ts-ignore
-                softDeletedPur = (resSD && (resSD.modifiedCount ?? 0));
+                const rPurSD = resSD;
+                softDeletedPur = (rPurSD && (rPurSD.modifiedCount ?? 0));
             }
             const purMs = Date.now() - purStart;
             logger.info({ pages: pagesPur, fetched: fetchedPur, upserted: upsertedPur, total: totalPur, lastMax: lastMaxPur, newMax: newMaxPur, reachedOld: reachedOldPur, stoppedReason: stoppedReasonPur, softDeleted: softDeletedPur, fullRefresh: doFullRefreshIncrementals, ms: purMs }, 'Purchases sync completed (incremental)');

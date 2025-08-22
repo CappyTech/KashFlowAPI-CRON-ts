@@ -1,7 +1,11 @@
 import 'dotenv/config';
+// Collect missing required env vars to throw a single aggregated error (clearer than failing on the first)
+const _missingRequired = [];
 function required(name, value) {
-    if (!value)
-        throw new Error(`Missing required env var: ${name}`);
+    if (!value) {
+        _missingRequired.push(name);
+        return ''; // placeholder; we throw after config assembly
+    }
     return value;
 }
 function bool(envVal, defaultVal) {
@@ -57,7 +61,28 @@ export const config = {
         enabled: bool(process.env.METRICS_ENABLED, true),
         port: parseInt(process.env.PORT || process.env.METRICS_PORT || '3000', 10),
         authUser: process.env.METRICS_AUTH_USER,
-        authPass: process.env.METRICS_AUTH_PASS
+        authPass: process.env.METRICS_AUTH_PASS,
+        allowRemoteTrigger: bool(process.env.METRICS_ALLOW_REMOTE_TRIGGER, false),
     },
 };
+// If any required variables were missing, throw one combined error now.
+if (_missingRequired.length) {
+    throw new Error(`Missing required env vars: ${_missingRequired.join(', ')}`);
+}
+// Optional debug: if ENV_DEBUG=true, log the resolved required env vars (excluding their actual secret values length only)
+if (['true', '1', 'yes', 'on'].includes((process.env.ENV_DEBUG || '').toLowerCase())) {
+    const redact = (v) => v ? `${v.length} chars` : 'unset';
+    // Only list the required secrets / identifiers for quick inspection
+    // eslint-disable-next-line no-console
+    console.info('[config] ENV_DEBUG required vars summary:', {
+        KASHFLOW_USERNAME: redact(process.env.KASHFLOW_USERNAME),
+        KASHFLOW_PASSWORD: redact(process.env.KASHFLOW_PASSWORD),
+        KASHFLOW_MEMORABLE_WORD: redact(process.env.KASHFLOW_MEMORABLE_WORD),
+        MONGO_DB_NAME: redact(process.env.MONGO_DB_NAME),
+        DIRECT_DB: process.env.DIRECT_DB,
+        SSH_HOST: redact(process.env.SSH_HOST),
+        SSH_USERNAME: redact(process.env.SSH_USERNAME),
+        // Do not log SSH_PASSWORD length intentionally unless set
+    });
+}
 export default config;
