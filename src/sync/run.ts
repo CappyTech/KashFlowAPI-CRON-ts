@@ -14,23 +14,48 @@ import { SyncSummaryModel } from '../db/models.js';
 
 const mutex = new Mutex();
 const DIFF_FIELD_LIMIT = 40;
-function diffDocs(before: any, after: any) {
-    if (!before) return { changedFields: Object.keys(after || {}).slice(0, DIFF_FIELD_LIMIT), changes: Object.fromEntries(Object.entries(after || {}).slice(0, DIFF_FIELD_LIMIT).map(([k, v]) => [k, { before: undefined, after: v }])) };
+
+// Narrow shape for updateOne results (enough to eliminate @ts-ignore usage)
+type UpdateResultLike = {
+    acknowledged?: boolean;
+    matchedCount?: number;
+    modifiedCount?: number;
+    upsertedCount?: number;
+    upsertedId?: unknown;
+    upsertedIds?: unknown[];
+};
+
+function diffDocs(before: Record<string, any> | null | undefined, after: Record<string, any> | null | undefined) {
+    if (!after) return { changedFields: [] as string[], changes: {} as Record<string, { before: any; after: any }> };
+    if (!before) {
+        const keys = Object.keys(after).slice(0, DIFF_FIELD_LIMIT);
+        return {
+            changedFields: keys,
+            changes: Object.fromEntries(keys.map(k => [k, { before: undefined, after: (after as any)[k] }]))
+        };
+    }
     const changedFields: string[] = [];
-    const changes: any = {};
-    const keys = new Set([...Object.keys(before), ...Object.keys(after || {})]);
+    const changes: Record<string, { before: any; after: any }> = {};
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
     for (const k of keys) {
         // Skip volatile / metadata fields we don't want to treat as business diffs
         if (['updatedAt', 'createdAt', 'deletedAt', 'lastSeenRun', '_id', '__v'].includes(k)) continue;
-        // Also skip other underscore-prefixed housekeeping keys (defensive)
-        if (k.startsWith('_') && !(['_id', '__v'].includes(k) === false)) continue;
-        const bv = before[k];
-        const av = after[k];
-        if (JSON.stringify(bv) !== JSON.stringify(av)) {
-            changedFields.push(k);
-            if (changedFields.length >= DIFF_FIELD_LIMIT) break;
-            changes[k] = { before: bv, after: av };
+        // Skip other underscore-prefixed housekeeping keys (excluding _id/__v already handled above)
+        if (k.startsWith('_') && !['_id', '__v'].includes(k)) continue;
+        const bv = (before as any)[k];
+        const av = (after as any)[k];
+        // Fast path primitive / reference equality first
+        if (bv === av) continue;
+        // Fallback deep-ish compare via JSON for simple serialisable values
+        try {
+            if (JSON.stringify(bv) === JSON.stringify(av)) continue;
+        } catch { /* ignore stringify issues and treat as changed */ }
+        changedFields.push(k);
+        if (changedFields.length >= DIFF_FIELD_LIMIT) {
+            changes[k] = { before: bv, after: av }; // capture last triggering field
+            break;
         }
+        changes[k] = { before: bv, after: av };
     }
     return { changedFields, changes };
 }
@@ -100,13 +125,15 @@ export async function runSync() {
                         },
                         { upsert: true, setDefaultsOnInsert: true }
                     );
-                    // @ts-ignore driver compat
-                    const wasInserted = res.upsertedCount === 1 || (Array.isArray(res.upsertedIds) && res.upsertedIds.length > 0) || !!res.upsertedId;
+                    const r1 = res as unknown as UpdateResultLike;
+                    const wasInserted = r1.upsertedCount === 1 || (Array.isArray(r1.upsertedIds) && r1.upsertedIds.length > 0) || !!r1.upsertedId;
                     if (wasInserted) upsertedCust += 1; else if (res.modifiedCount) upsertedCust += 1; // treat modifications as upserts for count visibility
-                    try {
-                        await UpsertLogModel.create({ entity: 'customers', key: c.Code, op: wasInserted ? 'insert' : 'update', runId: runIdCustomers, modifiedCount: (res as any).modifiedCount, upsertedId: (res as any).upsertedId, changedFields, changes });
-                    } catch (e) {
-                        if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write customer upsert log');
+                    if (wasInserted || changedFields.length > 0) {
+                        try {
+                            await UpsertLogModel.create({ entity: 'customers', key: c.Code, op: wasInserted ? 'insert' : 'update', runId: runIdCustomers, modifiedCount: (res as any).modifiedCount, upsertedId: (res as any).upsertedId, changedFields, changes });
+                        } catch (e) {
+                            if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write customer upsert log');
+                        }
                     }
                     if (config.flags.upsertLogs) {
                         logger.debug({ entity: 'customers', code: c.Code, wasInserted, modifiedCount: (res as any).modifiedCount }, 'Customer upsert');
@@ -133,8 +160,8 @@ export async function runSync() {
                     { $or: [{ lastSeenRun: { $ne: runIdCustomers } }, { lastSeenRun: { $exists: false } }], deletedAt: null },
                     { $set: { deletedAt: new Date(), updatedAt: new Date() } }
                 );
-                // @ts-ignore Mongo driver returns modifiedCount
-                softDeletedCust = (resSD && (resSD.modifiedCount ?? 0)) as number;
+                const rSD = resSD as unknown as UpdateResultLike;
+                softDeletedCust = (rSD && (rSD.modifiedCount ?? 0)) as number;
             }
             const custMs = Date.now() - custStart;
             logger.info({ pages: pagesCust, fetched: fetchedCust, processed: fetchedCust, upserted: upsertedCust, total: totalCust, softDeleted: softDeletedCust, ms: custMs }, 'Customers sync completed');
@@ -189,12 +216,14 @@ export async function runSync() {
                         { $set: updateSup, $setOnInsert: { createdAt: new Date(), deletedAt: null } },
                         { upsert: true, setDefaultsOnInsert: true }
                     );
-                    // @ts-ignore
-                    const wasInserted = res.upsertedCount === 1 || (Array.isArray(res.upsertedIds) && res.upsertedIds.length > 0) || !!res.upsertedId;
+                    const r2 = res as unknown as UpdateResultLike;
+                    const wasInserted = r2.upsertedCount === 1 || (Array.isArray(r2.upsertedIds) && r2.upsertedIds.length > 0) || !!r2.upsertedId;
                     if (wasInserted) upsertedSupCount += 1; else if (res.modifiedCount) upsertedSupCount += 1;
-                    try {
-                        await UpsertLogModel.create({ entity: 'suppliers', key: s.Code, op: wasInserted ? 'insert' : 'update', runId: runIdSup, modifiedCount: (res as any).modifiedCount, upsertedId: (res as any).upsertedId, changedFields: changedFieldsSup, changes: changesSup });
-                    } catch (e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write supplier upsert log'); }
+                    if (wasInserted || changedFieldsSup.length > 0) {
+                        try {
+                            await UpsertLogModel.create({ entity: 'suppliers', key: s.Code, op: wasInserted ? 'insert' : 'update', runId: runIdSup, modifiedCount: (res as any).modifiedCount, upsertedId: (res as any).upsertedId, changedFields: changedFieldsSup, changes: changesSup });
+                        } catch (e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write supplier upsert log'); }
+                    }
                     if (config.flags.upsertLogs) {
                         logger.debug({ entity: 'suppliers', code: s.Code, wasInserted, modifiedCount: (res as any).modifiedCount }, 'Supplier upsert');
                     }
@@ -237,8 +266,8 @@ export async function runSync() {
                     { $or: [{ lastSeenRun: { $ne: runIdSup } }, { lastSeenRun: { $exists: false } }], deletedAt: null },
                     { $set: { deletedAt: new Date(), updatedAt: new Date() } }
                 );
-                // @ts-ignore
-                softDeletedSup = (resSD && (resSD.modifiedCount ?? 0)) as number;
+                const rSupSD = resSD as unknown as UpdateResultLike;
+                softDeletedSup = (rSupSD && (rSupSD.modifiedCount ?? 0)) as number;
             }
             const supMs = Date.now() - supStart;
             logger.info({ pages: pagesSup, fetched: fetchedSup, processed: fetchedSup, upserted: upsertedSupCount, total: totalSup, softDeleted: softDeletedSup, ms: supMs }, 'Suppliers sync completed');
@@ -293,8 +322,9 @@ export async function runSync() {
                         { upsert: true, setDefaultsOnInsert: true }
                     );
                     upsertedInv += 1;
-                    try { // @ts-ignore
-                        const wasInserted = res.upsertedCount === 1 || !!res.upsertedId; await UpsertLogModel.create({ entity: 'invoices', key: String(i.Number), op: wasInserted ? 'insert' : 'update', runId: runIdInv, modifiedCount: (res as any).modifiedCount, upsertedId: (res as any).upsertedId, changedFields: changedFieldsInv, changes: changesInv });
+                    try {
+                        const rInv = res as unknown as UpdateResultLike;
+                        const wasInserted = rInv.upsertedCount === 1 || !!rInv.upsertedId; if (wasInserted || changedFieldsInv.length > 0) { await UpsertLogModel.create({ entity: 'invoices', key: String(i.Number), op: wasInserted ? 'insert' : 'update', runId: runIdInv, modifiedCount: (rInv as any).modifiedCount, upsertedId: (rInv as any).upsertedId, changedFields: changedFieldsInv, changes: changesInv }); }
                     } catch (e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write invoice upsert log'); }
                 }
                 if (reachedOldInv) { stoppedReasonInv = 'reachedOld'; break; }
@@ -308,8 +338,8 @@ export async function runSync() {
                     { $or: [{ lastSeenRun: { $ne: runIdInv } }, { lastSeenRun: { $exists: false } }], deletedAt: null },
                     { $set: { deletedAt: new Date(), updatedAt: new Date() } }
                 );
-                // @ts-ignore
-                softDeletedInv = (resSD && (resSD.modifiedCount ?? 0)) as number;
+                const rInvSD = resSD as unknown as UpdateResultLike;
+                softDeletedInv = (rInvSD && (rInvSD.modifiedCount ?? 0)) as number;
             }
             const invMs = Date.now() - invStart;
             logger.info({ pages: pagesInv, fetched: fetchedInv, upserted: upsertedInv, total: totalInv, lastMax: lastMaxInv, newMax: newMaxInv, reachedOld: reachedOldInv, stoppedReason: stoppedReasonInv, softDeleted: softDeletedInv, fullRefresh: doFullRefreshIncrementals, ms: invMs }, 'Invoices sync completed (incremental)');
@@ -353,8 +383,9 @@ export async function runSync() {
                         { upsert: true, setDefaultsOnInsert: true }
                     );
                     upsertedQ += 1;
-                    try { // @ts-ignore
-                        const wasInserted = res.upsertedCount === 1 || !!res.upsertedId; await UpsertLogModel.create({ entity: 'quotes', key: String(q.Number), op: wasInserted ? 'insert' : 'update', runId: runIdQ, modifiedCount: (res as any).modifiedCount, upsertedId: (res as any).upsertedId, changedFields: changedFieldsQ, changes: changesQ });
+                    try {
+                        const rQ = res as unknown as UpdateResultLike;
+                        const wasInserted = rQ.upsertedCount === 1 || !!rQ.upsertedId; if (wasInserted || changedFieldsQ.length > 0) { await UpsertLogModel.create({ entity: 'quotes', key: String(q.Number), op: wasInserted ? 'insert' : 'update', runId: runIdQ, modifiedCount: (rQ as any).modifiedCount, upsertedId: (rQ as any).upsertedId, changedFields: changedFieldsQ, changes: changesQ }); }
                     } catch (e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write quote upsert log'); }
                 }
                 if (reachedOldQ) { stoppedReasonQ = 'reachedOld'; break; }
@@ -368,8 +399,8 @@ export async function runSync() {
                     { $or: [{ lastSeenRun: { $ne: runIdQ } }, { lastSeenRun: { $exists: false } }], deletedAt: null },
                     { $set: { deletedAt: new Date(), updatedAt: new Date() } }
                 );
-                // @ts-ignore
-                softDeletedQ = (resSD && (resSD.modifiedCount ?? 0)) as number;
+                const rQSD = resSD as unknown as UpdateResultLike;
+                softDeletedQ = (rQSD && (rQSD.modifiedCount ?? 0)) as number;
             }
             const qMs = Date.now() - qStart;
             logger.info({ pages: pagesQ, fetched: fetchedQ, upserted: upsertedQ, total: totalQ, lastMax: lastMaxQ, newMax: newMaxQ, reachedOld: reachedOldQ, stoppedReason: stoppedReasonQ, softDeleted: softDeletedQ, fullRefresh: doFullRefreshIncrementals, ms: qMs }, 'Quotes sync completed (incremental)');
@@ -414,8 +445,9 @@ export async function runSync() {
                         { upsert: true, setDefaultsOnInsert: true }
                     );
                     upsertedPj += 1;
-                    try { // @ts-ignore
-                        const wasInserted = res.upsertedCount === 1 || !!res.upsertedId; await UpsertLogModel.create({ entity: 'projects', key: String(pj.Number), op: wasInserted ? 'insert' : 'update', runId: runIdPj, modifiedCount: (res as any).modifiedCount, upsertedId: (res as any).upsertedId, changedFields: changedFieldsPj, changes: changesPj });
+                    try {
+                        const rPj = res as unknown as UpdateResultLike;
+                        const wasInserted = rPj.upsertedCount === 1 || !!rPj.upsertedId; if (wasInserted || changedFieldsPj.length > 0) { await UpsertLogModel.create({ entity: 'projects', key: String(pj.Number), op: wasInserted ? 'insert' : 'update', runId: runIdPj, modifiedCount: (rPj as any).modifiedCount, upsertedId: (rPj as any).upsertedId, changedFields: changedFieldsPj, changes: changesPj }); }
                     } catch (e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write project upsert log'); }
                 }
                 // Stop if:
@@ -436,8 +468,8 @@ export async function runSync() {
                     { $or: [{ lastSeenRun: { $ne: runIdPj } }, { lastSeenRun: { $exists: false } }], deletedAt: null },
                     { $set: { deletedAt: new Date(), updatedAt: new Date() } }
                 );
-                // @ts-ignore
-                softDeletedPj = (resSD && (resSD.modifiedCount ?? 0)) as number;
+                const rPjSD = resSD as unknown as UpdateResultLike;
+                softDeletedPj = (rPjSD && (rPjSD.modifiedCount ?? 0)) as number;
             }
             const pjMs = Date.now() - pjStart;
             logger.info({ pages: pagesPj, fetched: fetchedPj, upserted: upsertedPj, total: totalPj, lastMax: lastMaxPj, newMax: newMaxPj, reachedOld: reachedOldPj, stoppedReason: stoppedReasonPj, unpaged: unpagedPj, softDeleted: softDeletedPj, fullRefresh: doFullRefreshIncrementals, ms: pjMs }, 'Projects sync completed (incremental)');
@@ -481,10 +513,10 @@ export async function runSync() {
                         { $set: updatePurDoc, $setOnInsert: { createdAt: new Date(), deletedAt: null } },
                         { upsert: true, setDefaultsOnInsert: true }
                     );
-                    // @ts-ignore
-                    const wasInserted = res.upsertedCount === 1 || !!res.upsertedId;
+                    const rPur = res as unknown as UpdateResultLike;
+                    const wasInserted = rPur.upsertedCount === 1 || !!rPur.upsertedId;
                     upsertedPur += 1;
-                    try { await UpsertLogModel.create({ entity: 'purchases', key: String(p.Number), op: wasInserted ? 'insert' : 'update', runId: runIdPur, modifiedCount: (res as any).modifiedCount, upsertedId: (res as any).upsertedId, changedFields: changedFieldsPur, changes: changesPur }); } catch (e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write purchase upsert log'); }
+                    try { if (wasInserted || changedFieldsPur.length > 0) { await UpsertLogModel.create({ entity: 'purchases', key: String(p.Number), op: wasInserted ? 'insert' : 'update', runId: runIdPur, modifiedCount: (res as any).modifiedCount, upsertedId: (res as any).upsertedId, changedFields: changedFieldsPur, changes: changesPur }); } } catch (e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write purchase upsert log'); }
                 }
                 if (reachedOldPur) { stoppedReasonPur = 'reachedOld'; break; }
                 if (items.length < perpagePur) { stoppedReasonPur = 'partialPage'; break; }
@@ -498,8 +530,8 @@ export async function runSync() {
                     { $or: [{ lastSeenRun: { $ne: runIdPur } }, { lastSeenRun: { $exists: false } }], deletedAt: null },
                     { $set: { deletedAt: new Date(), updatedAt: new Date() } }
                 );
-                // @ts-ignore
-                softDeletedPur = (resSD && (resSD.modifiedCount ?? 0)) as number;
+                const rPurSD = resSD as unknown as UpdateResultLike;
+                softDeletedPur = (rPurSD && (rPurSD.modifiedCount ?? 0)) as number;
             }
             const purMs = Date.now() - purStart;
             logger.info({ pages: pagesPur, fetched: fetchedPur, upserted: upsertedPur, total: totalPur, lastMax: lastMaxPur, newMax: newMaxPur, reachedOld: reachedOldPur, stoppedReason: stoppedReasonPur, softDeleted: softDeletedPur, fullRefresh: doFullRefreshIncrementals, ms: purMs }, 'Purchases sync completed (incremental)');
