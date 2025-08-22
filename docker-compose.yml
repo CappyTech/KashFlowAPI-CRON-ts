@@ -1,11 +1,11 @@
 services:
   app:
-    build: .
+    image: ghcr.io/CappyTech/kashflowapi-cron-ts:latest
+    pull_policy: always   # remove if your compose version doesn't support
     restart: unless-stopped
     container_name: heroncs-sync
     env_file:
       - compose.env
-    # Host port (left side) can be changed without editing Dockerfile
     ports:
       - "8080:3000"
     healthcheck:

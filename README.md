@@ -113,3 +113,28 @@ To view logs:
 ```
 docker compose logs -f app
 ```
+
+### Pre-built image (GitHub Container Registry)
+
+Instead of building locally you can pull a published image (if available).
+
+1. Authenticate to GHCR if the repo/image is private:
+```
+echo <TOKEN> | docker login ghcr.io -u <USER> --password-stdin
+```
+2. Edit `docker-compose.yml` service `app`:
+```
+  # image: ghcr.io/cappytech/kashflowapi-cron-ts:latest
+  # build: . (comment this out)
+```
+3. Pull & start:
+```
+docker compose pull app
+docker compose up -d
+```
+If you keep both `image` and `build`, Compose may still build; prefer one.
+
+Tagging scheme suggestion:
+- `:sha-<gitsha>` immutable
+- `:latest` moving pointer
+- `:vX.Y.Z` semver releases

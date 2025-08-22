@@ -31,6 +31,13 @@ function human(ms: number) {
 
 export function startMetricsServer() {
   const server = http.createServer((req, res) => {
+    const startedAt = Date.now();
+    // Log route access when response finishes
+    res.on('finish', () => {
+      try {
+        logger.info({ method: req.method, url: req.url, status: res.statusCode, ms: Date.now() - startedAt }, 'route');
+      } catch { /* swallow logging errors */ }
+    });
     // HTTP Basic Auth for all endpoints
     const user = config.metrics.authUser;
     const pass = config.metrics.authPass;
