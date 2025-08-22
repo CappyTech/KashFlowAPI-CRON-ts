@@ -1,9 +1,10 @@
 import http from 'node:http';
 import logger, { getLogBuffer, logEvents } from '../util/logger.js';
-import { getLastSummary } from '../sync/summary.js';
+import { getLastSummary, setNextCron, setNextFullRefresh } from '../sync/summary.js';
 import { runSync } from '../sync/run.js';
 import { SyncSummaryModel, UpsertLogModel } from '../db/models.js';
 import { config } from '../config.js';
+import { getState } from '../sync/state.js';
 
 let totalRuns = 0;
 let totalFailures = 0;
@@ -163,11 +164,15 @@ export function startMetricsServer() {
       const timers = await fetchJson('/timers');
       const nextCronEl=document.getElementById('nextCron');
       const nextFullEl=document.getElementById('nextFull');
-      if (timers.nextCronTs) { nextCronEl.dataset.ts=String(timers.nextCronTs); }
+      if (timers.cronEnabled===false) {
+        nextCronEl.textContent='Cron disabled';
+        delete nextCronEl.dataset.ts;
+      } else if (timers.nextCronTs) {
+        nextCronEl.dataset.ts=String(timers.nextCronTs);
+      }
       if (timers.nextFullRefreshTs) { nextFullEl.dataset.ts=String(timers.nextFullRefreshTs); }
-      tickTimers(); // immediate update so user doesn't see 'calculating...'
+      tickTimers(); // immediate update
     } catch(e) {
-      // retry soon if failed
       setTimeout(()=>{ if(!document.getElementById('nextCron').dataset.ts) attemptTimersRetry(); }, 2000);
     }
   }
@@ -176,7 +181,7 @@ export function startMetricsServer() {
     if (document.getElementById('nextCron').dataset.ts) return; // already resolved
     if (timersRetryCount>5) return; // give up after a few silent retries
     timersRetryCount++;
-    try { const timers=await fetchJson('/timers'); const nC=document.getElementById('nextCron'); const nF=document.getElementById('nextFull'); if(timers.nextCronTs){ nC.dataset.ts=String(timers.nextCronTs);} if(timers.nextFullRefreshTs){ nF.dataset.ts=String(timers.nextFullRefreshTs);} tickTimers(); } catch(e){ setTimeout(attemptTimersRetry, 2000); }
+    try { const timers=await fetchJson('/timers'); const nC=document.getElementById('nextCron'); const nF=document.getElementById('nextFull'); if (timers.cronEnabled===false){ nC.textContent='Cron disabled'; delete nC.dataset.ts; return; } if(timers.nextCronTs){ nC.dataset.ts=String(timers.nextCronTs);} if(timers.nextFullRefreshTs){ nF.dataset.ts=String(timers.nextFullRefreshTs);} tickTimers(); } catch(e){ setTimeout(attemptTimersRetry, 2000); }
   }
   function tickTimers(){const now=Date.now();const OVERDUE_MS=60000;function fmt(diff){if(diff<=0)return 'due';const s=Math.floor(diff/1000);if(s<60)return s+'s';const m=Math.floor(s/60);if(m<60)return m+'m '+(s%60)+'s';const h=Math.floor(m/60);return h+'h '+(m%60)+'m';}const nC=document.getElementById('nextCron');const nF=document.getElementById('nextFull');if(nC&&nC.dataset.ts){const diff=parseInt(nC.dataset.ts)-now;nC.textContent='Next cron: '+fmt(diff);nC.style.color= diff<=0 && Math.abs(diff)>OVERDUE_MS ? '#ff5555':'inherit';}if(nF&&nF.dataset.ts){const diff=parseInt(nF.dataset.ts)-now;nF.textContent='Next full refresh: '+fmt(diff);nF.style.color= diff<=0 ? '#f0ad4e':'inherit';} }
   setInterval(tickTimers,1000);
@@ -361,17 +366,28 @@ function refresh(){var p=new URL(window.location.href);if(p.searchParams.get('ru
       const wantsJson = u.searchParams.get('format') === 'json' || accept.includes('application/json');
       (async () => {
         let { nextCronTs, nextFullRefreshTs, inProgress } = getLastSummary() as any;
-        if (!nextCronTs) {
-          try { const parserMod: any = await import('cron-parser'); const it = parserMod.parseExpression(config.cron, { currentDate: new Date() }); nextCronTs = it.next().getTime(); } catch (e) { }
+        const cronEnabled = !!config.flags.cronEnabled;
+        // Predict cron if enabled and not yet set
+        if (cronEnabled && !nextCronTs) {
+          try { const parserMod: any = await import('cron-parser'); const it = parserMod.parseExpression(config.cron, { currentDate: new Date() }); nextCronTs = it.next().getTime(); setNextCron(nextCronTs); } catch (e) { }
+        }
+        // Predict next full refresh if not set (based on last full refresh state value)
+        if (!nextFullRefreshTs) {
+          try {
+            const fullRefreshHours = config.flags.fullRefreshHours || 24;
+            const lastFull = (await getState<number>('incremental:lastFullRefreshTs')) || 0;
+            const target = lastFull ? (lastFull + fullRefreshHours * 3600_000) : Date.now();
+            nextFullRefreshTs = target; setNextFullRefresh(target);
+          } catch {}
         }
         const now = Date.now();
         const OVERDUE_THRESHOLD_MS = 60_000;
-        const data = { now, nextCronTs: nextCronTs || null, nextCronInMs: nextCronTs ? (nextCronTs - now) : null, cronOverdue: nextCronTs ? (now - nextCronTs) > OVERDUE_THRESHOLD_MS : null, nextFullRefreshTs: nextFullRefreshTs || null, nextFullRefreshInMs: nextFullRefreshTs ? (nextFullRefreshTs - now) : null, fullRefreshDue: nextFullRefreshTs ? now >= nextFullRefreshTs : null, inProgress };
+        const data = { now, cronEnabled, nextCronTs: cronEnabled ? (nextCronTs || null) : null, nextCronInMs: (cronEnabled && nextCronTs) ? (nextCronTs - now) : null, cronOverdue: (cronEnabled && nextCronTs) ? (now - nextCronTs) > OVERDUE_THRESHOLD_MS : null, nextFullRefreshTs: nextFullRefreshTs || null, nextFullRefreshInMs: nextFullRefreshTs ? (nextFullRefreshTs - now) : null, fullRefreshDue: nextFullRefreshTs ? now >= nextFullRefreshTs : null, inProgress };
         if (wantsJson) {
           res.statusCode = 200; res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify(data));
         }
         res.statusCode = 200; res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        return res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Timers</title><style>body{font-family:system-ui,Arial,sans-serif;background:#0f1115;color:#eee;margin:1.2rem;}h1{margin:0 0 .75rem;}table{border-collapse:collapse;}td{padding:4px 8px;border:1px solid #333;font-size:.75rem;}a{color:#6cc6ff;text-decoration:none;}</style></head><body><h1>Timers</h1><p><a href="/">&larr; Dashboard</a></p><table><tbody><tr><td>Now</td><td>${new Date(data.now).toLocaleString()}</td></tr><tr><td>Next Cron</td><td>${data.nextCronTs ? new Date(data.nextCronTs).toLocaleString() : '(unknown)'}${data.cronOverdue ? ' <span style="color:#ff5555">OVERDUE</span>' : ''}</td></tr><tr><td>Next Full Refresh</td><td>${data.nextFullRefreshTs ? new Date(data.nextFullRefreshTs).toLocaleString() : '(unknown)'}${data.fullRefreshDue ? ' <span style="color:#f0ad4e">DUE</span>' : ''}</td></tr><tr><td>In Progress</td><td>${data.inProgress ? 'yes' : 'no'}</td></tr></tbody></table><pre style="background:#181c22;padding:6px;margin-top:1rem;">${JSON.stringify(data, null, 2).replace(/</g, '&lt;')}</pre></body></html>`);
+        return res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Timers</title><style>body{font-family:system-ui,Arial,sans-serif;background:#0f1115;color:#eee;margin:1.2rem;}h1{margin:0 0 .75rem;}table{border-collapse:collapse;}td{padding:4px 8px;border:1px solid #333;font-size:.75rem;}a{color:#6cc6ff;text-decoration:none;}</style></head><body><h1>Timers</h1><p><a href="/">&larr; Dashboard</a></p><table><tbody><tr><td>Now</td><td>${new Date(data.now).toLocaleString()}</td></tr><tr><td>Next Cron</td><td>${cronEnabled ? (data.nextCronTs ? new Date(data.nextCronTs).toLocaleString() : '(unknown)') : 'Cron disabled'}${data.cronOverdue ? ' <span style="color:#ff5555">OVERDUE</span>' : ''}</td></tr><tr><td>Next Full Refresh</td><td>${data.nextFullRefreshTs ? new Date(data.nextFullRefreshTs).toLocaleString() : '(unknown)'}${data.fullRefreshDue ? ' <span style="color:#f0ad4e">DUE</span>' : ''}</td></tr><tr><td>In Progress</td><td>${data.inProgress ? 'yes' : 'no'}</td></tr></tbody></table><pre style="background:#181c22;padding:6px;margin-top:1rem;">${JSON.stringify(data, null, 2).replace(/</g, '&lt;')}</pre></body></html>`);
       })();
     }
 
