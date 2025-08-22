@@ -99,7 +99,7 @@ export function startMetricsServer() {
       <div id="timers" style="margin-top:.5rem;font-size:.7rem;opacity:.85;">
         <span id="nextCron">Next cron: calculating...</span> | <span id="nextFull">Next full refresh: calculating...</span>
       </div>
-  <table id="entities" style="display:none;"><thead><tr><th>Entity</th><th>Pages</th><th>Fetched</th><th>Processed</th><th>Upserted</th><th>API Total</th><th>Soft Deleted</th><th>LastMax→NewMax</th><th>Duration</th></tr></thead><tbody></tbody></table>
+  <table id="entities" style="display:none;"><thead><tr><th>Entity</th><th>Pages</th><th>Fetched</th><th>Processed</th><th>Upserted</th><th>API Total</th><th>Soft Deleted</th><th>LastMax→NewMax</th><th>Duration</th><th>Stop Reason</th></tr></thead><tbody></tbody></table>
   <div id="legend" style="display:none;font-size:.6rem;opacity:.7;margin-top:.25rem;">* full refresh traversal</div>
       <div id="history" style="display:none;margin-top:1rem;">
         <h2 style="margin:0 0 .4rem;font-size:1rem;">Recent Sync History</h2>
@@ -158,6 +158,7 @@ export function startMetricsServer() {
             tr.appendChild(td(soft));
             tr.appendChild(td(range));
             tr.appendChild(td(human(e.ms||0)));
+            tr.appendChild(td(e.stoppedReason||''));
             body.appendChild(tr);
         });
         tbl.style.display='table';
@@ -227,47 +228,163 @@ export function startMetricsServer() {
 
     // /metrics (Prometheus or HTML)
     else if (url.startsWith('/metrics')) {
-      const u = new URL(url, 'http://x');
-      const format = (u.searchParams.get('format') || '').toLowerCase();
-      const preferHtml = format === 'html' || (!format && accept.includes('text/html') && !accept.includes('text/plain'));
-      const { lastSummary, inProgress } = getLastSummary();
-      const lines: string[] = [];
-      lines.push('# HELP sync_runs_total Total sync runs');
-      lines.push('# TYPE sync_runs_total counter');
-      lines.push(`sync_runs_total ${totalRuns}`);
-      lines.push('# HELP sync_failures_total Total failed sync runs');
-      lines.push('# TYPE sync_failures_total counter');
-      lines.push(`sync_failures_total ${totalFailures}`);
-      lines.push('# HELP sync_last_duration_ms Duration of last completed sync in ms');
-      lines.push('# TYPE sync_last_duration_ms gauge');
-      lines.push(`sync_last_duration_ms ${lastDurationMs}`);
-      lines.push('# HELP sync_last_success 1 if last sync succeeded, else 0');
-      lines.push('# TYPE sync_last_success gauge');
-      lines.push(`sync_last_success ${lastSummary ? (lastSummary.success ? 1 : 0) : 0}`);
-      lines.push('# HELP sync_in_progress 1 if a sync is currently running');
-      lines.push('# TYPE sync_in_progress gauge');
-      lines.push(`sync_in_progress ${inProgress ? 1 : 0}`);
-      if (lastSummary) {
-        for (const e of lastSummary.entities) {
-          const lbl = `entity="${e.entity}"`;
-          if (typeof e.fetched === 'number') lines.push(`sync_entity_fetched_total{${lbl}} ${e.fetched}`);
-          if (typeof e.upserted === 'number') lines.push(`sync_entity_upserted_total{${lbl}} ${e.upserted}`);
-          if (typeof e.processed === 'number') lines.push(`sync_entity_processed_total{${lbl}} ${e.processed}`);
-          if (typeof e.pages === 'number') lines.push(`sync_entity_pages_total{${lbl}} ${e.pages}`);
-          if (typeof e.total === 'number') lines.push(`sync_entity_api_total{${lbl}} ${e.total}`);
-          if (typeof e.softDeleted === 'number') lines.push(`sync_entity_soft_deleted_total{${lbl}} ${e.softDeleted}`);
-          if (typeof e.newMax === 'number') lines.push(`sync_entity_newmax{${lbl}} ${e.newMax}`);
-          if (typeof e.lastMax === 'number') lines.push(`sync_entity_lastmax{${lbl}} ${e.lastMax}`);
-          lines.push(`sync_entity_duration_ms{${lbl}} ${e.ms}`);
+      (async () => {
+        const u = new URL(url, 'http://x');
+        const format = (u.searchParams.get('format') || '').toLowerCase();
+        const preferHtml = format === 'html' || (!format && accept.includes('text/html') && !accept.includes('text/plain'));
+        const { lastSummary, inProgress, nextCronTs, nextFullRefreshTs } = getLastSummary();
+        const lines: string[] = [];
+        lines.push('# HELP sync_runs_total Total sync runs');
+        lines.push('# TYPE sync_runs_total counter');
+        lines.push(`sync_runs_total ${totalRuns}`);
+        lines.push('# HELP sync_failures_total Total failed sync runs');
+        lines.push('# TYPE sync_failures_total counter');
+        lines.push(`sync_failures_total ${totalFailures}`);
+        lines.push('# HELP sync_last_duration_ms Duration of last completed sync in ms');
+        lines.push('# TYPE sync_last_duration_ms gauge');
+        lines.push(`sync_last_duration_ms ${lastDurationMs}`);
+        lines.push('# HELP sync_last_success 1 if last sync succeeded, else 0');
+        lines.push('# TYPE sync_last_success gauge');
+        lines.push(`sync_last_success ${lastSummary ? (lastSummary.success ? 1 : 0) : 0}`);
+        lines.push('# HELP sync_in_progress 1 if a sync is currently running');
+        lines.push('# TYPE sync_in_progress gauge');
+        lines.push(`sync_in_progress ${inProgress ? 1 : 0}`);
+        // Timestamps
+        const nowMs = Date.now();
+        lines.push('# HELP sync_now_timestamp_seconds Current server time in seconds');
+        lines.push('# TYPE sync_now_timestamp_seconds gauge');
+        lines.push(`sync_now_timestamp_seconds ${Math.floor(nowMs/1000)}`);
+        if (lastSummary) {
+          const startTs = Date.parse(lastSummary.start);
+            const endTs = Date.parse(lastSummary.end);
+            lines.push('# HELP sync_last_start_timestamp_seconds Start time of last sync');
+            lines.push('# TYPE sync_last_start_timestamp_seconds gauge');
+            lines.push(`sync_last_start_timestamp_seconds ${Math.floor(startTs/1000)}`);
+            lines.push('# HELP sync_last_end_timestamp_seconds End time of last sync');
+            lines.push('# TYPE sync_last_end_timestamp_seconds gauge');
+            lines.push(`sync_last_end_timestamp_seconds ${Math.floor(endTs/1000)}`);
+            lines.push('# HELP sync_time_since_last_success_seconds Seconds since last sync finished');
+            lines.push('# TYPE sync_time_since_last_success_seconds gauge');
+            lines.push(`sync_time_since_last_success_seconds ${(nowMs - endTs)/1000}`);
         }
-      }
-      if (!preferHtml || format === 'prom' || format === 'text') {
-        res.statusCode = 200; res.setHeader('Content-Type', 'text/plain; version=0.0.4');
-        return res.end(lines.join('\n') + '\n');
-      }
-      const entityRows = (lastSummary?.entities || []).map(e => `<tr><td>${e.entity}</td><td>${e.pages ?? 0}</td><td>${e.fetched ?? 0}</td><td>${e.upserted ?? 'n/a'}</td><td>${e.total ?? 0}</td><td>${e.softDeleted ?? 'n/a'}</td><td>${(e.lastMax !== undefined || e.newMax !== undefined) ? (e.lastMax || 0) + '->' + (e.newMax || 0) : 'n/a'}</td><td>${human(e.ms || 0)}</td></tr>`).join('');
-      res.statusCode = 200; res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      return res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Metrics</title><style>body{font-family:system-ui,Arial,sans-serif;background:#0f1115;color:#eee;margin:1.2rem;}table{border-collapse:collapse;width:100%;margin-top:1rem;}th,td{border:1px solid #333;padding:4px 6px;font-size:.75rem;}th{background:#1d2229;}tbody tr:nth-child(even){background:#181c22;}pre{background:#181c22;padding:8px;overflow:auto;}a{color:#6cc6ff;text-decoration:none;}a:hover{text-decoration:underline;}</style></head><body><h1>Metrics</h1><div><a href="/">&larr; Dashboard</a> | <a href="/metrics?format=prom" >Plain Text</a></div><h2>High-level</h2><ul><li>Total Runs: <strong>${totalRuns}</strong></li><li>Total Failures: <strong>${totalFailures}</strong></li><li>Last Duration: <strong>${human(lastDurationMs)}</strong></li><li>In Progress: <strong>${inProgress ? 'yes' : 'no'}</strong></li><li>Last Success: <strong>${lastSummary ? (lastSummary.success ? 'yes' : 'no') : 'n/a'}</strong></li></ul><h2>Entities (Last Run)</h2><table><thead><tr><th>Entity</th><th>Pages</th><th>Fetched</th><th>Upserted</th><th>API Total</th><th>Soft Deleted</th><th>LastMax→NewMax</th><th>Duration</th></tr></thead><tbody>${entityRows || '<tr><td colspan=8>No data</td></tr>'}</tbody></table><h2>Raw</h2><pre>${lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('\n')}</pre><script>setInterval(()=>{fetch('/metrics?format=prom').then(r=>r.text()).then(t=>{document.querySelector('pre').textContent=t;});},5000);</script></body></html>`);
+        if (nextCronTs) {
+          lines.push('# HELP sync_next_cron_timestamp_seconds Next cron fire (predicted)');
+          lines.push('# TYPE sync_next_cron_timestamp_seconds gauge');
+          lines.push(`sync_next_cron_timestamp_seconds ${Math.floor(nextCronTs/1000)}`);
+        }
+        if (nextFullRefreshTs) {
+          lines.push('# HELP sync_next_full_refresh_timestamp_seconds Next full refresh timestamp');
+            lines.push('# TYPE sync_next_full_refresh_timestamp_seconds gauge');
+            lines.push(`sync_next_full_refresh_timestamp_seconds ${Math.floor(nextFullRefreshTs/1000)}`);
+        }
+        // Last full refresh state
+        try {
+          const lastFull = await getState<number>('incremental:lastFullRefreshTs');
+          if (lastFull) {
+            lines.push('# HELP sync_last_full_refresh_timestamp_seconds Last full refresh (incrementals)');
+            lines.push('# TYPE sync_last_full_refresh_timestamp_seconds gauge');
+            lines.push(`sync_last_full_refresh_timestamp_seconds ${Math.floor(lastFull/1000)}`);
+          }
+        } catch {}
+        // Entity metrics
+        if (lastSummary) {
+          for (const e of lastSummary.entities) {
+            const lbl = `entity="${e.entity}"`;
+            if (typeof e.fetched === 'number') lines.push(`sync_entity_fetched_total{${lbl}} ${e.fetched}`);
+            if (typeof e.upserted === 'number') lines.push(`sync_entity_upserted_total{${lbl}} ${e.upserted}`);
+            if (typeof e.processed === 'number') lines.push(`sync_entity_processed_total{${lbl}} ${e.processed}`);
+            if (typeof e.pages === 'number') lines.push(`sync_entity_pages_total{${lbl}} ${e.pages}`);
+            if (typeof e.total === 'number') lines.push(`sync_entity_api_total{${lbl}} ${e.total}`);
+            if (typeof e.softDeleted === 'number') lines.push(`sync_entity_soft_deleted_total{${lbl}} ${e.softDeleted}`);
+            if (typeof e.newMax === 'number') lines.push(`sync_entity_newmax{${lbl}} ${e.newMax}`);
+            if (typeof e.lastMax === 'number') lines.push(`sync_entity_lastmax{${lbl}} ${e.lastMax}`);
+            lines.push(`sync_entity_duration_ms{${lbl}} ${e.ms}`);
+            lines.push(`sync_entity_full_refresh{${lbl}} ${e.fullRefresh ? 1 : 0}`);
+            if (e.stoppedReason) {
+              const reason = String(e.stoppedReason).replace(/"/g,'');
+              lines.push(`sync_entity_stop_reason{${lbl},reason="${reason}"} 1`);
+            }
+            if (typeof e.softDeleted === 'number' && typeof e.total === 'number' && e.total > 0) {
+              const ratio = e.softDeleted / e.total;
+              lines.push(`sync_entity_soft_delete_ratio{${lbl}} ${ratio}`);
+            }
+          }
+        }
+        // Rolling stats (last 50 summaries)
+        try {
+          const recent = await SyncSummaryModel.find({}, { durationMs:1, success:1 }).sort({ start:-1 }).limit(50).lean();
+          if (recent.length) {
+            const durations = recent.map(r=>r.durationMs).filter(Boolean) as number[];
+            if (durations.length) {
+              const avg = durations.reduce((a,b)=>a+b,0)/durations.length;
+              const sorted = [...durations].sort((a,b)=>a-b);
+              const p95 = sorted[Math.min(sorted.length-1, Math.floor(0.95*sorted.length)-1)];
+              lines.push('# HELP sync_recent_avg_duration_ms Mean duration (last 50 runs)');
+              lines.push('# TYPE sync_recent_avg_duration_ms gauge');
+              lines.push(`sync_recent_avg_duration_ms ${avg}`);
+              lines.push('# HELP sync_recent_p95_duration_ms 95th percentile duration (last 50 runs)');
+              lines.push('# TYPE sync_recent_p95_duration_ms gauge');
+              lines.push(`sync_recent_p95_duration_ms ${p95}`);
+            }
+            // Success / failure streaks
+            let successStreak=0, failureStreak=0;
+            for (const r of recent) { if (r.success) { if (failureStreak===0) successStreak++; else break; } else { if (successStreak===0) failureStreak++; else break; } }
+            lines.push('# HELP sync_success_streak Current consecutive success count');
+            lines.push('# TYPE sync_success_streak gauge');
+            lines.push(`sync_success_streak ${successStreak}`);
+            lines.push('# HELP sync_failure_streak Current consecutive failure count');
+            lines.push('# TYPE sync_failure_streak gauge');
+            lines.push(`sync_failure_streak ${failureStreak}`);
+          }
+        } catch {}
+        // Upsert logs last hour per entity (approx activity rate)
+        try {
+          const since = new Date(Date.now() - 3600_000);
+          const entities = ['customers','suppliers','invoices','quotes','projects','purchases'];
+          for (const ent of entities) {
+            const c = await UpsertLogModel.countDocuments({ entity: ent, ts: { $gte: since } });
+            lines.push(`# HELP upsert_logs_hour_total Upsert log entries in the last hour per entity`);
+            lines.push('# TYPE upsert_logs_hour_total gauge');
+            lines.push(`upsert_logs_hour_total{entity="${ent}"} ${c}`);
+          }
+        } catch {}
+        // Config flags (boolean only)
+        try {
+          const flags = config.flags || {} as Record<string, any>;
+          for (const [k,v] of Object.entries(flags)) {
+            if (typeof v === 'boolean') {
+              lines.push(`# HELP config_flag_${k} Config flag ${k}`);
+              lines.push(`# TYPE config_flag_${k} gauge`);
+              lines.push(`config_flag_${k} ${v?1:0}`);
+            }
+          }
+        } catch {}
+        // Process metrics
+        try {
+          const mu = process.memoryUsage();
+          lines.push('# HELP process_resident_memory_bytes Resident set size in bytes');
+          lines.push('# TYPE process_resident_memory_bytes gauge');
+          lines.push(`process_resident_memory_bytes ${mu.rss}`);
+          lines.push('# HELP process_heap_used_bytes V8 heap used bytes');
+          lines.push('# TYPE process_heap_used_bytes gauge');
+          lines.push(`process_heap_used_bytes ${mu.heapUsed}`);
+          lines.push('# HELP process_uptime_seconds Process uptime in seconds');
+          lines.push('# TYPE process_uptime_seconds gauge');
+          lines.push(`process_uptime_seconds ${process.uptime()}`);
+          const v = process.versions.node.replace(/"/g,'');
+          lines.push('# HELP node_version_info Node.js version info (value is 1)');
+          lines.push('# TYPE node_version_info gauge');
+          lines.push(`node_version_info{version="${v}"} 1`);
+        } catch {}
+        if (!preferHtml || format === 'prom' || format === 'text') {
+          res.statusCode = 200; res.setHeader('Content-Type', 'text/plain; version=0.0.4');
+          return res.end(lines.join('\n') + '\n');
+        }
+        const entityRows = (lastSummary?.entities || []).map(e => `<tr><td>${e.entity}${e.fullRefresh?' *':''}</td><td>${e.pages ?? 0}</td><td>${e.fetched ?? 0}</td><td>${e.processed ?? ( (e.lastMax!==undefined||e.newMax!==undefined)?'n/a':0)}</td><td>${e.upserted ?? 'n/a'}</td><td>${e.total ?? 0}</td><td>${e.softDeleted ?? 'n/a'}</td><td>${(e.lastMax !== undefined || e.newMax !== undefined) ? (e.lastMax || 0) + '->' + (e.newMax || 0) : 'n/a'}</td><td>${human(e.ms || 0)}</td><td>${e.stoppedReason || ''}</td></tr>`).join('');
+        res.statusCode = 200; res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        const extraSummary = lastSummary ? `<p>Time since last run: <strong>${human(Date.now()-Date.parse(lastSummary.end))}</strong> | Success streak: <strong>${lines.find(l=>l.startsWith('sync_success_streak'))?.split(' ').pop()}</strong> | Failure streak: <strong>${lines.find(l=>l.startsWith('sync_failure_streak'))?.split(' ').pop()}</strong>${nextCronTs?` | Next cron: <code>${new Date(nextCronTs).toLocaleString()}</code>`:''}${nextFullRefreshTs?` | Next full refresh: <code>${new Date(nextFullRefreshTs).toLocaleString()}</code>`:''}</p>` : '';
+        return res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Metrics</title><style>body{font-family:system-ui,Arial,sans-serif;background:#0f1115;color:#eee;margin:1.2rem;}table{border-collapse:collapse;width:100%;margin-top:1rem;}th,td{border:1px solid #333;padding:4px 6px;font-size:.7rem;}th{background:#1d2229;}tbody tr:nth-child(even){background:#181c22;}pre{background:#181c22;padding:8px;overflow:auto;}a{color:#6cc6ff;text-decoration:none;}a:hover{text-decoration:underline;}</style></head><body><h1>Metrics</h1><div><a href="/">&larr; Dashboard</a> | <a href="/metrics?format=prom" >Plain Text</a></div><h2>High-level</h2><ul><li>Total Runs: <strong>${totalRuns}</strong></li><li>Total Failures: <strong>${totalFailures}</strong></li><li>Last Duration: <strong>${human(lastDurationMs)}</strong></li><li>In Progress: <strong>${inProgress ? 'yes' : 'no'}</strong></li><li>Last Success: <strong>${lastSummary ? (lastSummary.success ? 'yes' : 'no') : 'n/a'}</strong></li></ul>${extraSummary}<h2>Entities (Last Run)</h2><table><thead><tr><th>Entity</th><th>Pages</th><th>Fetched</th><th>Processed</th><th>Upserted</th><th>API Total</th><th>Soft Deleted</th><th>LastMax→NewMax</th><th>Duration</th><th>Stop Reason</th></tr></thead><tbody>${entityRows || '<tr><td colspan=10>No data</td></tr>'}</tbody></table><div style="font-size:.6rem;opacity:.7;margin-top:.3rem;">* full refresh traversal</div><h2>Raw</h2><pre>${lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('\n')}</pre><script>setInterval(()=>{fetch('/metrics?format=prom').then(r=>r.text()).then(t=>{document.querySelector('pre').textContent=t;});},5000);</script></body></html>`);
+      })();
     }
 
     // /sync-summary (latest)
