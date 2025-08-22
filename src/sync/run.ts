@@ -88,7 +88,9 @@ export async function runSync() {
                         LastInvoiceDate: (c as any).LastInvoiceDate ? new Date((c as any).LastInvoiceDate as any) : (c as any).LastInvoiceDate,
                         updatedAt: new Date(),
                         lastSeenRun: runIdCustomers,
-                    };
+                    } as any;
+                    // Preserve uuid so diffDocs doesn't treat it as removed
+                    if (existing?.uuid) updateDoc.uuid = existing.uuid;
                     const { changedFields, changes } = diffDocs(existing, updateDoc);
                     const res = await CustomerModel.updateOne(
                         { Code: c.Code },
@@ -179,7 +181,8 @@ export async function runSync() {
                 }
                 for (const s of items) {
                     const existingSup = await SupplierModel.findOne({ Code: s.Code }).lean();
-                    const updateSup = { ...s, LastUpdatedDate: s.LastUpdatedDate ? new Date(s.LastUpdatedDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdSup };
+                    const updateSup = { ...s, LastUpdatedDate: s.LastUpdatedDate ? new Date(s.LastUpdatedDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdSup } as any;
+                    if (existingSup?.uuid) updateSup.uuid = (existingSup as any).uuid;
                     const { changedFields: changedFieldsSup, changes: changesSup } = diffDocs(existingSup, updateSup);
                     const res = await SupplierModel.updateOne(
                         { Code: s.Code },
@@ -281,7 +284,8 @@ export async function runSync() {
                     if (i.Number && i.Number > newMaxInv) newMaxInv = i.Number;
                     if (!doFullRefreshIncrementals && i.Number && i.Number <= lastMaxInv) { reachedOldInv = true; continue; }
                     const existingInv = await InvoiceModel.findOne({ Number: i.Number }).lean();
-                    const updateInv = { ...i, IssuedDate: i.IssuedDate ? new Date(i.IssuedDate) : undefined, DueDate: i.DueDate ? new Date(i.DueDate) : undefined, LastPaymentDate: i.LastPaymentDate ? new Date(i.LastPaymentDate) : i.LastPaymentDate, PaidDate: i.PaidDate ? new Date(i.PaidDate) : i.PaidDate, updatedAt: new Date(), lastSeenRun: runIdInv };
+                    const updateInv = { ...i, IssuedDate: i.IssuedDate ? new Date(i.IssuedDate) : undefined, DueDate: i.DueDate ? new Date(i.DueDate) : undefined, LastPaymentDate: i.LastPaymentDate ? new Date(i.LastPaymentDate) : i.LastPaymentDate, PaidDate: i.PaidDate ? new Date(i.PaidDate) : i.PaidDate, updatedAt: new Date(), lastSeenRun: runIdInv } as any;
+                    if (existingInv?.uuid) updateInv.uuid = (existingInv as any).uuid; else updateInv.uuid = `invoice:${i.Number}`; // match $setOnInsert for diff visibility
                     const { changedFields: changedFieldsInv, changes: changesInv } = diffDocs(existingInv, updateInv);
                     const res = await InvoiceModel.updateOne(
                         { Number: i.Number },
@@ -340,7 +344,8 @@ export async function runSync() {
                     if (q.Number && q.Number > newMaxQ) newMaxQ = q.Number;
                     if (!doFullRefreshIncrementals && q.Number && q.Number <= lastMaxQ) { reachedOldQ = true; continue; }
                     const existingQ = await QuoteModel.findOne({ Number: q.Number }).lean();
-                    const updateQ = { ...q, Date: q.Date ? new Date(q.Date) : undefined, updatedAt: new Date(), lastSeenRun: runIdQ };
+                    const updateQ = { ...q, Date: q.Date ? new Date(q.Date) : undefined, updatedAt: new Date(), lastSeenRun: runIdQ } as any;
+                    if (existingQ?.uuid) updateQ.uuid = (existingQ as any).uuid;
                     const { changedFields: changedFieldsQ, changes: changesQ } = diffDocs(existingQ, updateQ);
                     const res = await QuoteModel.updateOne(
                         { Number: q.Number },
@@ -400,7 +405,8 @@ export async function runSync() {
                     if (pj.Number && pj.Number > newMaxPj) newMaxPj = pj.Number;
                     if (!doFullRefreshIncrementals && pj.Number && pj.Number <= lastMaxPj) { reachedOldPj = true; continue; }
                     const existingPj = await ProjectModel.findOne({ Number: pj.Number }).lean();
-                    const updatePj = { ...pj, StartDate: pj.StartDate ? new Date(pj.StartDate) : undefined, EndDate: pj.EndDate ? new Date(pj.EndDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdPj };
+                    const updatePj = { ...pj, StartDate: pj.StartDate ? new Date(pj.StartDate) : undefined, EndDate: pj.EndDate ? new Date(pj.EndDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdPj } as any;
+                    if (existingPj?.uuid) updatePj.uuid = (existingPj as any).uuid;
                     const { changedFields: changedFieldsPj, changes: changesPj } = diffDocs(existingPj, updatePj);
                     const res = await ProjectModel.updateOne(
                         { Number: pj.Number },
@@ -467,7 +473,8 @@ export async function runSync() {
                     if (p.Number && p.Number > newMaxPur) newMaxPur = p.Number;
                     if (!doFullRefreshIncrementals && p.Number && p.Number <= lastMaxPur) { reachedOldPur = true; continue; }
                     const existingPur = await PurchaseModel.findOne({ Number: p.Number }).lean();
-                    const updatePurDoc = { ...p, IssuedDate: p.IssuedDate ? new Date(p.IssuedDate) : undefined, DueDate: p.DueDate ? new Date(p.DueDate) : undefined, PaidDate: p.PaidDate ? new Date(p.PaidDate) : p.PaidDate, updatedAt: new Date(), lastSeenRun: runIdPur };
+                    const updatePurDoc = { ...p, IssuedDate: p.IssuedDate ? new Date(p.IssuedDate) : undefined, DueDate: p.DueDate ? new Date(p.DueDate) : undefined, PaidDate: p.PaidDate ? new Date(p.PaidDate) : p.PaidDate, updatedAt: new Date(), lastSeenRun: runIdPur } as any;
+                    if (existingPur?.uuid) updatePurDoc.uuid = (existingPur as any).uuid;
                     const { changedFields: changedFieldsPur, changes: changesPur } = diffDocs(existingPur, updatePurDoc);
                     const res = await PurchaseModel.updateOne(
                         { Number: p.Number },
