@@ -217,7 +217,11 @@ export function startMetricsServer() {
         miniSetStatus();
       })();
       const histBtn=document.getElementById('historyBtn');const histDiv=document.getElementById('history');histBtn.addEventListener('click',async()=>{if(histDiv.style.display==='none'){histDiv.style.display='block';histBtn.textContent='Hide History';await loadHistory();}else{histDiv.style.display='none';histBtn.textContent='Show History';}});
-      document.querySelectorAll('.navBtn').forEach(b=>b.addEventListener('click',()=>{const l=b.getAttribute('data-link');if(l)window.open(l,'_blank');}));
+      // Simple same-tab navigation (no popups)
+      document.querySelectorAll('.navBtn').forEach(b=>b.addEventListener('click',()=>{
+        const l=b.getAttribute('data-link');
+        if(l) window.location.href = l;
+      }));
       </script></body></html>`);
     }
 
