@@ -6,8 +6,11 @@ import { SyncSummaryModel, UpsertLogModel } from '../db/models.js';
 import { config } from '../config.js';
 import { getState } from '../sync/state.js';
 // JSON import (tsconfig has resolveJsonModule true)
-import pkg from '../../package.json';
-const APP_VERSION: string = (pkg as any)?.version || 'dev';
+// Lazy load version without static import to avoid path resolution issues during build
+import { createRequire } from 'node:module';
+const _require = createRequire(import.meta.url);
+let APP_VERSION = process.env.APP_VERSION || process.env.IMAGE_VERSION || 'dev';
+try { const ver = _require('../version.js'); if (ver?.APP_VERSION) APP_VERSION = ver.APP_VERSION; } catch {}
 
 let totalRuns = 0;
 let totalFailures = 0;
