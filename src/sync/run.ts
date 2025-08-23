@@ -42,6 +42,9 @@ function diffDocs(before: Record<string, any> | null | undefined, after: Record<
         if (['updatedAt', 'createdAt', 'deletedAt', 'lastSeenRun', '_id', '__v'].includes(k)) continue;
         // Skip other underscore-prefixed housekeeping keys (excluding _id/__v already handled above)
         if (k.startsWith('_') && !['_id', '__v'].includes(k)) continue;
+        const hasAfter = Object.prototype.hasOwnProperty.call(after, k);
+        // If the updated doc does NOT include this key, treat it as untouched (avoid phantom removals like field -> undefined)
+        if (!hasAfter) continue;
         const bv = (before as any)[k];
         const av = (after as any)[k];
         // Fast path primitive / reference equality first
