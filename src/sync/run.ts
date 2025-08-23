@@ -505,7 +505,42 @@ export async function runSync() {
                     if (p.Number && p.Number > newMaxPur) newMaxPur = p.Number;
                     if (!doFullRefreshIncrementals && p.Number && p.Number <= lastMaxPur) { reachedOldPur = true; continue; }
                     const existingPur = await PurchaseModel.findOne({ Number: p.Number }).lean();
-                    const updatePurDoc = { ...p, IssuedDate: p.IssuedDate ? new Date(p.IssuedDate) : undefined, DueDate: p.DueDate ? new Date(p.DueDate) : undefined, PaidDate: p.PaidDate ? new Date(p.PaidDate) : p.PaidDate, updatedAt: new Date(), lastSeenRun: runIdPur } as any;
+                    // Build purchase update document, deriving UK TaxYear / TaxMonth from PaidDate if present.
+                    // UK tax year runs 6 April (Year N) to 5 April (Year N+1). Tax month 1 = 6 Apr - 5 May, ... month 12 = 6 Mar - 5 Apr.
+                    const paidDateObj = p.PaidDate ? new Date(p.PaidDate) : undefined;
+                    let taxYear: number | undefined;   // We store the STARTING year of the tax year (e.g. 2024 for 6 Apr 2024 - 5 Apr 2025)
+                    let taxMonth: number | undefined;   // 1..12 per HMRC month boundaries
+                    if (paidDateObj && !isNaN(paidDateObj.getTime())) {
+                        const d = paidDateObj;
+                        const y = d.getFullYear();
+                        // Determine start year: if before 6 April of this year, belongs to previous start year
+                        const thisYearApril6 = new Date(y, 3, 6); // month index 3 = April
+                        const startYear = d < thisYearApril6 ? y - 1 : y;
+                        taxYear = startYear;
+                        // Build boundary starts for each tax month (1..12) then the end sentinel
+                        const boundaries: Date[] = [
+                            new Date(startYear, 3, 6),  // 1: 6 Apr
+                            new Date(startYear, 4, 6),  // 2: 6 May
+                            new Date(startYear, 5, 6),  // 3: 6 Jun
+                            new Date(startYear, 6, 6),  // 4: 6 Jul
+                            new Date(startYear, 7, 6),  // 5: 6 Aug
+                            new Date(startYear, 8, 6),  // 6: 6 Sep
+                            new Date(startYear, 9, 6),  // 7: 6 Oct
+                            new Date(startYear, 10, 6), // 8: 6 Nov
+                            new Date(startYear, 11, 6), // 9: 6 Dec
+                            new Date(startYear + 1, 0, 6), // 10: 6 Jan
+                            new Date(startYear + 1, 1, 6), // 11: 6 Feb
+                            new Date(startYear + 1, 2, 6), // 12: 6 Mar
+                            new Date(startYear + 1, 3, 6)  // end sentinel (next 6 Apr)
+                        ];
+                        // Find tax month by locating the last boundary <= date
+                        for (let i = 0; i < boundaries.length - 1; i++) {
+                            if (d >= boundaries[i] && d < boundaries[i + 1]) { taxMonth = i + 1; break; }
+                        }
+                        // Safety fallback (should not happen): if not matched but date >= last start boundary
+                        if (!taxMonth && d >= boundaries[boundaries.length - 2]) taxMonth = 12;
+                    }
+                    const updatePurDoc = { ...p, IssuedDate: p.IssuedDate ? new Date(p.IssuedDate) : undefined, DueDate: p.DueDate ? new Date(p.DueDate) : undefined, PaidDate: paidDateObj ?? p.PaidDate, TaxYear: taxYear, TaxMonth: taxMonth, updatedAt: new Date(), lastSeenRun: runIdPur } as any;
                     if (existingPur?.uuid) updatePurDoc.uuid = (existingPur as any).uuid;
                     const { changedFields: changedFieldsPur, changes: changesPur } = diffDocs(existingPur, updatePurDoc);
                     const res = await PurchaseModel.updateOne(
