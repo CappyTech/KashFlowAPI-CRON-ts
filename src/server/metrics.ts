@@ -5,6 +5,9 @@ import { runSync } from '../sync/run.js';
 import { SyncSummaryModel, UpsertLogModel } from '../db/models.js';
 import { config } from '../config.js';
 import { getState } from '../sync/state.js';
+// JSON import (tsconfig has resolveJsonModule true)
+import pkg from '../../package.json';
+const APP_VERSION: string = (pkg as any)?.version || 'dev';
 
 let totalRuns = 0;
 let totalFailures = 0;
@@ -32,6 +35,16 @@ function human(ms: number) {
 export function startMetricsServer() {
   const server = http.createServer((req, res) => {
     const startedAt = Date.now();
+    // Inject version into all HTML <h1> tags automatically (non-invasive)
+    const _end = res.end;
+    (res as any).end = function(chunk: any, encoding?: any, cb?: any) {
+      try {
+        if (typeof chunk === 'string' && chunk.includes('<h1') && !chunk.includes('v'+APP_VERSION)) {
+          chunk = chunk.replace(/<h1([^>]*)>([^<]+)/, (m, attrs, text) => `<h1${attrs}>${text} <small style="font-size:.55em;opacity:.65;">v${APP_VERSION}</small>`);
+        }
+      } catch { /* ignore */ }
+      return _end.call(this, chunk, encoding, cb);
+    };
     // Log route access when response finishes
     res.on('finish', () => {
       try {
@@ -375,6 +388,10 @@ export function startMetricsServer() {
           lines.push('# HELP node_version_info Node.js version info (value is 1)');
           lines.push('# TYPE node_version_info gauge');
           lines.push(`node_version_info{version="${v}"} 1`);
+          // App version metric
+          lines.push('# HELP app_version Application version (value is 1)');
+          lines.push('# TYPE app_version gauge');
+          lines.push(`app_version{version="${APP_VERSION}"} 1`);
         } catch {}
         if (!preferHtml || format === 'prom' || format === 'text') {
           res.statusCode = 200; res.setHeader('Content-Type', 'text/plain; version=0.0.4');

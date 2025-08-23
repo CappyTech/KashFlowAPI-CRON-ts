@@ -318,7 +318,7 @@ export async function runSync() {
                     const { changedFields: changedFieldsInv, changes: changesInv } = diffDocs(existingInv, updateInv);
                     const res = await InvoiceModel.updateOne(
                         { Number: i.Number },
-                        { $set: updateInv, $setOnInsert: { createdAt: new Date(), deletedAt: null, uuid: `invoice:${i.Number}` } },
+                        { $set: updateInv, $setOnInsert: { createdAt: new Date(), deletedAt: null } }, // uuid only in $set to avoid path conflict
                         { upsert: true, setDefaultsOnInsert: true }
                     );
                     upsertedInv += 1;
