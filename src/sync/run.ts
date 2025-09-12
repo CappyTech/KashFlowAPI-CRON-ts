@@ -25,6 +25,23 @@ type UpdateResultLike = {
     upsertedIds?: unknown[];
 };
 
+// Shallow-merge specific nested object fields to preserve existing keys when the API omits them.
+// Arrays are left as-is (replaced). Only merges plain objects for the provided keys.
+function mergeNestedObjects<T extends Record<string, any>>(existing: any | null | undefined, incoming: T, keys: string[]): T {
+    if (!existing) return incoming;
+    const out = { ...incoming } as Record<string, any>;
+    for (const k of keys) {
+        const prev = existing?.[k];
+        const next = incoming?.[k];
+        if (!prev || !next) continue;
+        if (Array.isArray(prev) || Array.isArray(next)) continue;
+        if (typeof prev === 'object' && typeof next === 'object') {
+            out[k] = { ...prev, ...next };
+        }
+    }
+    return out as T;
+}
+
 function diffDocs(before: Record<string, any> | null | undefined, after: Record<string, any> | null | undefined) {
     if (!after) return { changedFields: [] as string[], changes: {} as Record<string, { before: any; after: any }> };
     if (!before) {
@@ -108,7 +125,7 @@ export async function runSync() {
                 }
                 for (const c of items) {
                     const existing = await CustomerModel.findOne({ Code: c.Code }).lean();
-                    const updateDoc = {
+                    let updateDoc = {
                         ...c,
                         LastUpdatedDate: c.LastUpdatedDate ? new Date(c.LastUpdatedDate) : undefined,
                         CreatedDate: (c as any).CreatedDate ? new Date((c as any).CreatedDate as any) : (c as any).CreatedDate,
@@ -117,6 +134,7 @@ export async function runSync() {
                         updatedAt: new Date(),
                         lastSeenRun: runIdCustomers,
                     } as any;
+                    updateDoc = mergeNestedObjects(existing, updateDoc, ['Currency', 'PaymentTerms', 'Address', 'DeliveryAddress']);
                     // Preserve uuid so diffDocs doesn't treat it as removed
                     if (existing?.uuid) updateDoc.uuid = existing.uuid;
                     const { changedFields, changes } = diffDocs(existing, updateDoc);
@@ -211,7 +229,8 @@ export async function runSync() {
                 }
                 for (const s of items) {
                     const existingSup = await SupplierModel.findOne({ Code: s.Code }).lean();
-                    const updateSup = { ...s, LastUpdatedDate: s.LastUpdatedDate ? new Date(s.LastUpdatedDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdSup } as any;
+                    let updateSup = { ...s, LastUpdatedDate: s.LastUpdatedDate ? new Date(s.LastUpdatedDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdSup } as any;
+                    updateSup = mergeNestedObjects(existingSup, updateSup, ['Currency', 'PaymentTerms', 'Address']);
                     if (existingSup?.uuid) updateSup.uuid = (existingSup as any).uuid;
                     const { changedFields: changedFieldsSup, changes: changesSup } = diffDocs(existingSup, updateSup);
                     const res = await SupplierModel.updateOne(
@@ -316,7 +335,8 @@ export async function runSync() {
                     if (i.Number && i.Number > newMaxInv) newMaxInv = i.Number;
                     if (!doFullRefreshIncrementals && i.Number && i.Number <= lastMaxInv) { reachedOldInv = true; continue; }
                     const existingInv = await InvoiceModel.findOne({ Number: i.Number }).lean();
-                    const updateInv = { ...i, IssuedDate: i.IssuedDate ? new Date(i.IssuedDate) : undefined, DueDate: i.DueDate ? new Date(i.DueDate) : undefined, LastPaymentDate: i.LastPaymentDate ? new Date(i.LastPaymentDate) : i.LastPaymentDate, PaidDate: i.PaidDate ? new Date(i.PaidDate) : i.PaidDate, updatedAt: new Date(), lastSeenRun: runIdInv } as any;
+                    let updateInv = { ...i, IssuedDate: i.IssuedDate ? new Date(i.IssuedDate) : undefined, DueDate: i.DueDate ? new Date(i.DueDate) : undefined, LastPaymentDate: i.LastPaymentDate ? new Date(i.LastPaymentDate) : i.LastPaymentDate, PaidDate: i.PaidDate ? new Date(i.PaidDate) : i.PaidDate, updatedAt: new Date(), lastSeenRun: runIdInv } as any;
+                    updateInv = mergeNestedObjects(existingInv, updateInv, ['Currency', 'DeliveryAddress', 'Address']);
                     if (existingInv?.uuid) updateInv.uuid = (existingInv as any).uuid; else updateInv.uuid = `invoice:${i.Number}`; // match $setOnInsert for diff visibility
                     const { changedFields: changedFieldsInv, changes: changesInv } = diffDocs(existingInv, updateInv);
                     const res = await InvoiceModel.updateOne(
@@ -377,7 +397,8 @@ export async function runSync() {
                     if (q.Number && q.Number > newMaxQ) newMaxQ = q.Number;
                     if (!doFullRefreshIncrementals && q.Number && q.Number <= lastMaxQ) { reachedOldQ = true; continue; }
                     const existingQ = await QuoteModel.findOne({ Number: q.Number }).lean();
-                    const updateQ = { ...q, Date: q.Date ? new Date(q.Date) : undefined, updatedAt: new Date(), lastSeenRun: runIdQ } as any;
+                    let updateQ = { ...q, Date: q.Date ? new Date(q.Date) : undefined, updatedAt: new Date(), lastSeenRun: runIdQ } as any;
+                    updateQ = mergeNestedObjects(existingQ, updateQ, ['Currency', 'DeliveryAddress', 'Address']);
                     if (existingQ?.uuid) updateQ.uuid = (existingQ as any).uuid;
                     const { changedFields: changedFieldsQ, changes: changesQ } = diffDocs(existingQ, updateQ);
                     const res = await QuoteModel.updateOne(
@@ -439,7 +460,8 @@ export async function runSync() {
                     if (pj.Number && pj.Number > newMaxPj) newMaxPj = pj.Number;
                     if (!doFullRefreshIncrementals && pj.Number && pj.Number <= lastMaxPj) { reachedOldPj = true; continue; }
                     const existingPj = await ProjectModel.findOne({ Number: pj.Number }).lean();
-                    const updatePj = { ...pj, StartDate: pj.StartDate ? new Date(pj.StartDate) : undefined, EndDate: pj.EndDate ? new Date(pj.EndDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdPj } as any;
+                    let updatePj = { ...pj, StartDate: pj.StartDate ? new Date(pj.StartDate) : undefined, EndDate: pj.EndDate ? new Date(pj.EndDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdPj } as any;
+                    updatePj = mergeNestedObjects(existingPj, updatePj, ['Address']);
                     if (existingPj?.uuid) updatePj.uuid = (existingPj as any).uuid;
                     const { changedFields: changedFieldsPj, changes: changesPj } = diffDocs(existingPj, updatePj);
                     const res = await ProjectModel.updateOne(
@@ -543,7 +565,8 @@ export async function runSync() {
                         // Safety fallback (should not happen): if not matched but date >= last start boundary
                         if (!taxMonth && d >= boundaries[boundaries.length - 2]) taxMonth = 12;
                     }
-                    const updatePurDoc = { ...p, IssuedDate: p.IssuedDate ? new Date(p.IssuedDate) : undefined, DueDate: p.DueDate ? new Date(p.DueDate) : undefined, PaidDate: paidDateObj ?? p.PaidDate, TaxYear: taxYear, TaxMonth: taxMonth, updatedAt: new Date(), lastSeenRun: runIdPur } as any;
+                    let updatePurDoc = { ...p, IssuedDate: p.IssuedDate ? new Date(p.IssuedDate) : undefined, DueDate: p.DueDate ? new Date(p.DueDate) : undefined, PaidDate: paidDateObj ?? p.PaidDate, TaxYear: taxYear, TaxMonth: taxMonth, updatedAt: new Date(), lastSeenRun: runIdPur } as any;
+                    updatePurDoc = mergeNestedObjects(existingPur, updatePurDoc, ['Currency', 'DeliveryAddress', 'Address']);
                     if (existingPur?.uuid) updatePurDoc.uuid = (existingPur as any).uuid;
                     const { changedFields: changedFieldsPur, changes: changesPur } = diffDocs(existingPur, updatePurDoc);
                     const res = await PurchaseModel.updateOne(
