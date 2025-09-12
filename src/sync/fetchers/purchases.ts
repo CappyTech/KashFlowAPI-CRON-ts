@@ -34,3 +34,15 @@ export async function fetchPurchases(page = 1, perpage = 100, params: Partial<Re
     logger.info({ page: meta.page, perpage: meta.perpage, total: meta.total, count: items.length }, 'Fetched purchases page');
     return { items: items as Purchase[], ...meta, nextPageUrl: nextPageUrl ?? undefined } as Paged<Purchase>;
 }
+
+// Fetch a single purchase by its Permalink to retrieve full details (e.g., LineItems, PaymentLines)
+export async function fetchPurchaseDetailByPermalink(permalink: string) {
+    try {
+        // Permalink typically looks like "/v2/documents/purchaseorder/<guid>" and works as a relative path with baseURL
+        const raw = await getWithRetry<any>(permalink, {});
+        return raw;
+    } catch (e) {
+        logger.warn({ permalink }, 'Failed to fetch purchase detail by permalink');
+        throw e;
+    }
+}
