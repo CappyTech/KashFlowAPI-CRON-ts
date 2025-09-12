@@ -4,7 +4,7 @@ import { getState, setState } from './state.js';
 import config from '../config.js';
 import { fetchCustomers } from './fetchers/customers.js';
 import { fetchSuppliers } from './fetchers/suppliers.js';
-import { fetchPurchases } from './fetchers/purchases.js';
+import { fetchPurchases, fetchPurchaseDetailByPermalink } from './fetchers/purchases.js';
 import { fetchInvoices } from './fetchers/invoices.js';
 import { fetchQuotes } from './fetchers/quotes.js';
 import { fetchProjects } from './fetchers/projects.js';
@@ -530,6 +530,16 @@ export async function runSync() {
                     if (p.Number && p.Number > newMaxPur) newMaxPur = p.Number;
                     if (!doFullRefreshIncrementals && p.Number && p.Number <= lastMaxPur) { reachedOldPur = true; continue; }
                     const existingPur = await PurchaseModel.findOne({ Number: p.Number }).lean();
+                    // Ensure LineItems populated: if not present but Permalink available, fetch detail
+                    let fullP: any = p as any;
+                    if ((!Array.isArray((p as any).LineItems) || (p as any).LineItems.length === 0) && (p as any).Permalink) {
+                        try {
+                            const detail = await fetchPurchaseDetailByPermalink((p as any).Permalink);
+                            if (detail && Array.isArray(detail.LineItems)) {
+                                fullP = { ...p, LineItems: detail.LineItems, PaymentLines: detail.PaymentLines ?? (p as any).PaymentLines };
+                            }
+                        } catch {/* skip detail enrichment on failure */}
+                    }
                     // Build purchase update document, deriving UK TaxYear / TaxMonth from PaidDate if present.
                     // UK tax year runs 6 April (Year N) to 5 April (Year N+1). Tax month 1 = 6 Apr - 5 May, ... month 12 = 6 Mar - 5 Apr.
                     const paidDateObj = p.PaidDate ? new Date(p.PaidDate) : undefined;
@@ -565,7 +575,7 @@ export async function runSync() {
                         // Safety fallback (should not happen): if not matched but date >= last start boundary
                         if (!taxMonth && d >= boundaries[boundaries.length - 2]) taxMonth = 12;
                     }
-                    let updatePurDoc = { ...p, IssuedDate: p.IssuedDate ? new Date(p.IssuedDate) : undefined, DueDate: p.DueDate ? new Date(p.DueDate) : undefined, PaidDate: paidDateObj ?? p.PaidDate, TaxYear: taxYear, TaxMonth: taxMonth, updatedAt: new Date(), lastSeenRun: runIdPur } as any;
+                    let updatePurDoc = { ...fullP, IssuedDate: fullP.IssuedDate ? new Date(fullP.IssuedDate) : undefined, DueDate: fullP.DueDate ? new Date(fullP.DueDate) : undefined, PaidDate: paidDateObj ?? fullP.PaidDate, TaxYear: taxYear, TaxMonth: taxMonth, updatedAt: new Date(), lastSeenRun: runIdPur } as any;
                     updatePurDoc = mergeNestedObjects(existingPur, updatePurDoc, ['Currency', 'DeliveryAddress', 'Address']);
                     if (existingPur?.uuid) updatePurDoc.uuid = (existingPur as any).uuid;
                     const { changedFields: changedFieldsPur, changes: changesPur } = diffDocs(existingPur, updatePurDoc);
