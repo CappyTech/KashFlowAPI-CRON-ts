@@ -4,7 +4,7 @@ import { getState, setState } from './state.js';
 import config from '../config.js';
 import { fetchCustomers } from './fetchers/customers.js';
 import { fetchSuppliers } from './fetchers/suppliers.js';
-import { fetchPurchases, fetchPurchaseDetailByPermalink } from './fetchers/purchases.js';
+import { fetchPurchases, fetchPurchaseDetailByPermalink, fetchPurchaseDetailById, fetchPurchaseDetailByNumber } from './fetchers/purchases.js';
 import { fetchInvoices } from './fetchers/invoices.js';
 import { fetchQuotes } from './fetchers/quotes.js';
 import { fetchProjects } from './fetchers/projects.js';
@@ -113,6 +113,11 @@ export async function runSync() {
             let completedFullCust = false;
             let pagesCust = 0;
             let softDeletedCust = 0;
+            let purchasesWithLineItems = 0;
+            let purchasesNeedingDetail = 0;
+            let detailFromPermalink = 0;
+            let detailFromId = 0;
+            let detailFromNumber = 0;
             while (true) {
                 const res = await fetchCustomers(pageCust, perpageCust);
                 const items = res.items || [];
@@ -532,14 +537,27 @@ export async function runSync() {
                     const existingPur = await PurchaseModel.findOne({ Number: p.Number }).lean();
                     // Ensure LineItems populated: if not present but Permalink available, fetch detail
                     let fullP: any = p as any;
-                    if ((!Array.isArray((p as any).LineItems) || (p as any).LineItems.length === 0) && (p as any).Permalink) {
-                        try {
-                            const detail = await fetchPurchaseDetailByPermalink((p as any).Permalink);
-                            if (detail && Array.isArray(detail.LineItems)) {
-                                fullP = { ...p, LineItems: detail.LineItems, PaymentLines: detail.PaymentLines ?? (p as any).PaymentLines };
-                            }
-                        } catch {/* skip detail enrichment on failure */}
+                    const hasLineItemsAlready = Array.isArray((p as any).LineItems) && (p as any).LineItems.length > 0;
+                    if (!hasLineItemsAlready) {
+                        purchasesNeedingDetail += 1;
+                        const permalink = (p as any).Permalink;
+                        let detail: any = null;
+                        if (permalink) {
+                            try { detail = await fetchPurchaseDetailByPermalink(permalink); if (detail) detailFromPermalink += 1; } catch {/* ignore */}
+                        }
+                        if (!detail && (p as any).Number) {
+                            try { detail = await fetchPurchaseDetailByNumber((p as any).Number); if (detail) detailFromNumber += 1; } catch {/* ignore */}
+                        }
+                        if (!detail && (p as any).Id) {
+                            try { detail = await fetchPurchaseDetailById((p as any).Id); if (detail) detailFromId += 1; } catch {/* ignore */}
+                        }
+                        if (detail && Array.isArray(detail.LineItems) && detail.LineItems.length) {
+                            fullP = { ...p, LineItems: detail.LineItems, PaymentLines: detail.PaymentLines ?? (p as any).PaymentLines };
+                        } else if (config.flags.upsertLogs) {
+                            logger.debug({ number: p.Number, id: (p as any).Id }, 'Purchase detail enrichment failed or no LineItems returned');
+                        }
                     }
+                    if (Array.isArray(fullP.LineItems) && fullP.LineItems.length) purchasesWithLineItems += 1;
                     // Build purchase update document, deriving UK TaxYear / TaxMonth from PaidDate if present.
                     // UK tax year runs 6 April (Year N) to 5 April (Year N+1). Tax month 1 = 6 Apr - 5 May, ... month 12 = 6 Mar - 5 Apr.
                     const paidDateObj = p.PaidDate ? new Date(p.PaidDate) : undefined;
@@ -605,7 +623,7 @@ export async function runSync() {
                 softDeletedPur = (rPurSD && (rPurSD.modifiedCount ?? 0)) as number;
             }
             const purMs = Date.now() - purStart;
-            logger.info({ pages: pagesPur, fetched: fetchedPur, upserted: upsertedPur, total: totalPur, lastMax: lastMaxPur, newMax: newMaxPur, reachedOld: reachedOldPur, stoppedReason: stoppedReasonPur, softDeleted: softDeletedPur, fullRefresh: doFullRefreshIncrementals, ms: purMs }, 'Purchases sync completed (incremental)');
+            logger.info({ pages: pagesPur, fetched: fetchedPur, upserted: upsertedPur, total: totalPur, lastMax: lastMaxPur, newMax: newMaxPur, reachedOld: reachedOldPur, stoppedReason: stoppedReasonPur, softDeleted: softDeletedPur, fullRefresh: doFullRefreshIncrementals, purchasesWithLineItems, purchasesNeedingDetail, detailFromPermalink, detailFromNumber, detailFromId, lineItemsCoveragePct: purchasesWithLineItems ? Number(((purchasesWithLineItems / Math.max(1, fetchedPur)) * 100).toFixed(2)) : 0, ms: purMs }, 'Purchases sync completed (incremental)');
             entities.push({ entity: 'purchases', pages: pagesPur, fetched: fetchedPur, upserted: upsertedPur, total: totalPur, lastMax: lastMaxPur, newMax: newMaxPur, reachedOld: reachedOldPur, softDeleted: softDeletedPur, stoppedReason: stoppedReasonPur, fullRefresh: doFullRefreshIncrementals, ms: purMs });
             
             // === End of Entity Syncs ===

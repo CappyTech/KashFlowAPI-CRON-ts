@@ -46,3 +46,25 @@ export async function fetchPurchaseDetailByPermalink(permalink: string) {
         throw e;
     }
 }
+
+// Fallback: fetch purchase detail by numeric Id if permalink absent
+export async function fetchPurchaseDetailById(id: number) {
+    try {
+        const raw = await getWithRetry<any>(`/purchases/${id}`);
+        return raw;
+    } catch (e) {
+        logger.warn({ id }, 'Failed to fetch purchase detail by id');
+        throw e;
+    }
+}
+
+// Some tenants may require retrieval by purchase Number (distinct from internal Id) if supported
+export async function fetchPurchaseDetailByNumber(number: number) {
+    try {
+        const raw = await getWithRetry<any>(`/purchases/${number}`); // API doc claims /purchases/{number}
+        return raw;
+    } catch (e) {
+        logger.warn({ number }, 'Failed to fetch purchase detail by number');
+        throw e;
+    }
+}
