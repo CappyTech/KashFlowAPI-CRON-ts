@@ -28,6 +28,7 @@ export async function fetchSuppliers(page = 1, perpage = 250) {
         perpage: perpage,
         total: Number(metaData?.TotalRecords ?? metaData?.totalRecords ?? raw?.total ?? raw?.Total ?? 0) || 0,
     };
-    logger.info({ page: meta.page, perpage: meta.perpage, total: meta.total, count: items.length }, 'Fetched suppliers page');
+    const hasNextByCount = items.length === meta.perpage && (meta.total === 0 || (meta.page * meta.perpage) < meta.total);
+    logger.info({ page: meta.page, perpage: meta.perpage, total: meta.total, count: items.length, hasNextByCount, nextPageUrl: !!nextPageUrl }, 'Fetched suppliers page');
     return { items: items as Supplier[], ...meta, nextPageUrl: nextPageUrl ?? undefined } as Paged<Supplier>;
 }

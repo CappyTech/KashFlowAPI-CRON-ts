@@ -27,7 +27,8 @@ export const config = {
         password: required('KASHFLOW_PASSWORD', process.env.KASHFLOW_PASSWORD),
         memorableWord: required('KASHFLOW_MEMORABLE_WORD', process.env.KASHFLOW_MEMORABLE_WORD),
         baseUrl: 'https://api.kashflow.com/v2',
-        timeoutMs: 30000,
+        // Allow override via env; increase default to 45s to mitigate large-page timeouts
+        timeoutMs: parseInt(process.env.KASHFLOW_TIMEOUT_MS || '45000', 10),
     },
 
     ssh: {

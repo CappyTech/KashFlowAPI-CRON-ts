@@ -15,7 +15,7 @@ export interface InvoiceSummary {
 export interface Paged<T> { items: T[]; page: number; perpage: number; total: number; nextPageUrl?: string }
 
 // Allowed sortby (docs): Number, CustomerRef, CustomerName, InvoiceDate, PaymentDueDate, GrossAmount, NetAmount, Status
-export async function fetchInvoices(page = 1, perpage = 100, params: Partial<Record<string, string | number>> = {}) {
+export async function fetchInvoices(page = 1, perpage = 50, params: Partial<Record<string, string | number>> = {}) {
     const raw = await getWithRetry<any>('/invoices', { page, perpage, sortby: 'Number', order: 'Asc', ...params });
     if (page === 1) {
         const keys = raw && typeof raw === 'object' ? Object.keys(raw) : [];

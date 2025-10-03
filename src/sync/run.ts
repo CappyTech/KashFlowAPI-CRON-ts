@@ -255,6 +255,8 @@ export async function runSync() {
                         logger.debug({ entity: 'suppliers', code: s.Code, wasInserted, modifiedCount: (res as any).modifiedCount }, 'Supplier upsert');
                     }
                 }
+                const isPartial = items.length < perpageSup;
+                const exhaustedTotal = fetchedSup >= totalSup && totalSup > 0;
                 if (items.length === 0 && pageSup > 1) {
                     // Went past the last page; if we haven't looped and didn't start at page 1, wrap to beginning.
                     if (!loopedSup && initialPageSup > 1) {
@@ -272,11 +274,16 @@ export async function runSync() {
                     pageSup += 1;
                 } else {
                     // Last page reached; if started mid-list and not yet looped, wrap to page 1 and continue up to initial page - 1
-                    if (!loopedSup && initialPageSup > 1) {
+                    if (!loopedSup && initialPageSup > 1 && !(isPartial || exhaustedTotal)) {
                         loopedSup = true;
                         pageSup = 1;
                         continue;
                     }
+                    completedFullSup = true;
+                    await setState('suppliers:lastPage', 0);
+                    break;
+                }
+                if (isPartial || exhaustedTotal) {
                     completedFullSup = true;
                     await setState('suppliers:lastPage', 0);
                     break;
@@ -322,7 +329,7 @@ export async function runSync() {
                 if (lastMaxInv) await setState('invoices:lastMaxNumber', lastMaxInv);
             }
             let pageInv = 1;
-            const perpageInv = 100;
+            const perpageInv = 50; // reduce to lower payload size and mitigate timeouts
             let fetchedInv = 0;
             let totalInv = 0;
             let newMaxInv = lastMaxInv;
