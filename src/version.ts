@@ -1,4 +1,12 @@
-// Central place to expose application version at runtime without JSON import assertions.
-// Prefer environment variable (IMAGE_VERSION or APP_VERSION) to allow overriding in container builds.
-// Fallback to embedded constant updated manually on version bumps.
-export const APP_VERSION = process.env.APP_VERSION || process.env.IMAGE_VERSION || 'x.x.x';
+// App version resolution (env overrides > package.json > 'dev').
+import { createRequire } from 'node:module';
+const _require = createRequire(import.meta.url);
+
+export const APP_VERSION: string = (() => {
+	if (process.env.APP_VERSION) return process.env.APP_VERSION;
+	if (process.env.IMAGE_VERSION) return process.env.IMAGE_VERSION;
+	try {
+		const { version } = _require('../package.json');
+		return version || 'dev';
+	} catch { return 'dev'; }
+})();

@@ -5,3 +5,4 @@ start.sh
 output.log
 dist/
 compose.env
+/dist
