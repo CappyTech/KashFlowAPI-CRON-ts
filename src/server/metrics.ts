@@ -149,6 +149,8 @@ export function startMetricsServer() {
       <pre id="miniLog" style="display:none;max-height:240px;overflow:auto;background:#181c22;padding:6px;border-radius:4px;"></pre>
     </div>
     <script>
+      (function(){
+      try {
       // --- Dashboard Client Logic (restored) ---
       const statusEl = document.getElementById('status');
       const entitiesTable = document.getElementById('entities');
@@ -302,8 +304,8 @@ export function startMetricsServer() {
         const line = formatLog(rec);
         miniLogEl.textContent += line + '\n';
         miniCount++;
-        if (miniLogEl.textContent.length > 200_000) { // trim if grows too large
-          miniLogEl.textContent = miniLogEl.textContent.slice(-150_000);
+        if (miniLogEl.textContent.length > 200000) { // trim if grows too large
+          miniLogEl.textContent = miniLogEl.textContent.slice(-150000);
         }
         miniLogEl.scrollTop = miniLogEl.scrollHeight;
         miniSetStatus();
@@ -331,6 +333,13 @@ export function startMetricsServer() {
 
       // Navigation buttons
       document.querySelectorAll('.navBtn').forEach(b=>b.addEventListener('click',()=>{ const l=b.getAttribute('data-link'); if(l) window.location.href=l; }));
+      } catch(e) {
+        try {
+          var s = document.getElementById('status');
+          if (s) { s.innerHTML = '<span class="fail">UI script error: '+ String((e && e.message) || e) +'</span>'; }
+        } catch {}
+      }
+      })();
     </script>
   </body>
 </html>`);
