@@ -50,6 +50,14 @@ export const config = {
         port: parseInt(process.env.MONGO_PORT || '27017', 10),
     },
 
+    // Optional: Paperless-ngx integration for linking purchase PDFs
+    paperless: {
+        enabled: bool(process.env.PAPERLESS_ENABLED, false),
+        baseUrl: process.env.PAPERLESS_BASE_URL, // e.g., https://paperless.local
+        token: process.env.PAPERLESS_TOKEN, // API token
+        timeoutMs: parseInt(process.env.PAPERLESS_TIMEOUT_MS || '15000', 10),
+    },
+
     cron: process.env.CRON_SCHEDULE || '0 * * * *',
 
     flags: {
@@ -91,6 +99,8 @@ if (['true','1','yes','on'].includes((process.env.ENV_DEBUG||'').toLowerCase()))
         SSH_HOST: redact(process.env.SSH_HOST),
         SSH_USERNAME: redact(process.env.SSH_USERNAME),
         // Do not log SSH_PASSWORD length intentionally unless set
+        PAPERLESS_ENABLED: process.env.PAPERLESS_ENABLED,
+        PAPERLESS_BASE_URL: redact(process.env.PAPERLESS_BASE_URL),
     });
 }
 

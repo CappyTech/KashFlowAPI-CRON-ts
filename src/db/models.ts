@@ -186,6 +186,14 @@ const purchaseSchema = new mongoose.Schema(
         SubmissionDate: Date,
         TaxMonth: Number,
         TaxYear: Number,
+        // Linked Paperless-ngx document metadata
+        Paperless: {
+            Id: Number,
+            Title: String,
+            DownloadUrl: String,
+            PreviewUrl: String,
+            OriginalFileName: String,
+        },
         ...common,
     },
     { collection: 'purchases', strict: false }

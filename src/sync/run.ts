@@ -9,6 +9,7 @@ import { fetchInvoices } from './fetchers/invoices.js';
 import { fetchQuotes } from './fetchers/quotes.js';
 import { fetchProjects } from './fetchers/projects.js';
 import { CustomerModel, SupplierModel, PurchaseModel, InvoiceModel, QuoteModel, ProjectModel, UpsertLogModel } from '../db/models.js';
+import { findDocumentByPurchaseNumber } from '../integrations/paperless.js';
 import { markSyncStart, setLastSummary, EntitySummaryBase } from './summary.js';
 import { SyncSummaryModel } from '../db/models.js';
 
@@ -600,7 +601,29 @@ export async function runSync() {
                         // Safety fallback (should not happen): if not matched but date >= last start boundary
                         if (!taxMonth && d >= boundaries[boundaries.length - 2]) taxMonth = 12;
                     }
-                    let updatePurDoc = { ...fullP, IssuedDate: fullP.IssuedDate ? new Date(fullP.IssuedDate) : undefined, DueDate: fullP.DueDate ? new Date(fullP.DueDate) : undefined, PaidDate: paidDateObj ?? fullP.PaidDate, TaxYear: taxYear, TaxMonth: taxMonth, updatedAt: new Date(), lastSeenRun: runIdPur } as any;
+                    // Optionally attempt to find and link a Paperless document by purchase Number
+                    let paperlessMeta: any = undefined;
+                    if (config.paperless?.enabled) {
+                        try {
+                            // If we already have a link, skip lookup
+                            const already = existingPur && (existingPur as any).Paperless && (existingPur as any).Paperless.Id;
+                            if (!already && typeof p.Number === 'number') {
+                                const doc = await findDocumentByPurchaseNumber(p.Number);
+                                if (doc) {
+                                    paperlessMeta = {
+                                        Paperless: {
+                                            Id: doc.id,
+                                            Title: doc.title,
+                                            DownloadUrl: (doc as any).download_url,
+                                            PreviewUrl: (doc as any).preview_url,
+                                            OriginalFileName: (doc as any).original_file_name,
+                                        }
+                                    };
+                                }
+                            }
+                        } catch (e) { /* ignore paperless failures */ }
+                    }
+                    let updatePurDoc = { ...fullP, IssuedDate: fullP.IssuedDate ? new Date(fullP.IssuedDate) : undefined, DueDate: fullP.DueDate ? new Date(fullP.DueDate) : undefined, PaidDate: paidDateObj ?? fullP.PaidDate, TaxYear: taxYear, TaxMonth: taxMonth, ...(paperlessMeta||{}), updatedAt: new Date(), lastSeenRun: runIdPur } as any;
                     updatePurDoc = mergeNestedObjects(existingPur, updatePurDoc, ['Currency', 'DeliveryAddress', 'Address']);
                     if (existingPur?.uuid) updatePurDoc.uuid = (existingPur as any).uuid;
                     const { changedFields: changedFieldsPur, changes: changesPur } = diffDocs(existingPur, updatePurDoc);

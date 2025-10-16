@@ -1,22 +1,18 @@
 import http from 'node:http';
 
-import logger, { getLogBuffer, logEvents } from '../util/logger.js';
+import logger from '../util/logger.js';
 import { config } from '../config.js';
 import { getLastSummary, setNextCron, setNextFullRefresh } from '../sync/summary.js';
-import { runSync } from '../sync/run.js';
-import { SyncSummaryModel, UpsertLogModel } from '../db/models.js';
+import { SyncSummaryModel } from '../db/models.js';
 import { getState } from '../sync/state.js';
 import { APP_VERSION } from '../version.js';
+import { handleMetrics, handleTriggerSync } from './metrics/routes.js';
+import { handleSyncSummary, handleSummaries, handleSummary } from '../server/controllers/summariesController.js';
+import { getCounters, noteRun as noteRunCounters } from './metrics/metricsState.js';
+import { handleLogs, handleLogsStream } from '../server/controllers/logsController.js';
+import { handleUpserts } from '../server/controllers/upsertsController.js';
 
-let totalRuns = 0;
-let totalFailures = 0;
-let lastDurationMs = 0;
-
-export function noteRun(success: boolean, durationMs: number) {
-  totalRuns += 1;
-  if (!success) totalFailures += 1;
-  lastDurationMs = durationMs;
-}
+export const noteRun = noteRunCounters;
 
 function human(ms: number) {
   if (ms < 1000) return ms + ' ms';
@@ -351,221 +347,43 @@ export function startMetricsServer() {
         const u = new URL(url, 'http://x');
         const format = (u.searchParams.get('format') || '').toLowerCase();
         const preferHtml = format === 'html' || (!format && accept.includes('text/html') && !accept.includes('text/plain'));
-        const { lastSummary, inProgress, nextCronTs, nextFullRefreshTs } = getLastSummary();
-        const lines: string[] = [];
-        lines.push('# HELP sync_runs_total Total sync runs');
-        lines.push('# TYPE sync_runs_total counter');
-        lines.push(`sync_runs_total ${totalRuns}`);
-        lines.push('# HELP sync_failures_total Total failed sync runs');
-        lines.push('# TYPE sync_failures_total counter');
-        lines.push(`sync_failures_total ${totalFailures}`);
-        lines.push('# HELP sync_last_duration_ms Duration of last completed sync in ms');
-        lines.push('# TYPE sync_last_duration_ms gauge');
-        lines.push(`sync_last_duration_ms ${lastDurationMs}`);
-        lines.push('# HELP sync_last_success 1 if last sync succeeded, else 0');
-        lines.push('# TYPE sync_last_success gauge');
-        lines.push(`sync_last_success ${lastSummary ? (lastSummary.success ? 1 : 0) : 0}`);
-        lines.push('# HELP sync_in_progress 1 if a sync is currently running');
-        lines.push('# TYPE sync_in_progress gauge');
-        lines.push(`sync_in_progress ${inProgress ? 1 : 0}`);
-        // Timestamps
-        const nowMs = Date.now();
-        lines.push('# HELP sync_now_timestamp_seconds Current server time in seconds');
-        lines.push('# TYPE sync_now_timestamp_seconds gauge');
-        lines.push(`sync_now_timestamp_seconds ${Math.floor(nowMs / 1000)}`);
-        if (lastSummary) {
-          const startTs = Date.parse(lastSummary.start);
-          const endTs = Date.parse(lastSummary.end);
-          lines.push('# HELP sync_last_start_timestamp_seconds Start time of last sync');
-          lines.push('# TYPE sync_last_start_timestamp_seconds gauge');
-          lines.push(`sync_last_start_timestamp_seconds ${Math.floor(startTs / 1000)}`);
-          lines.push('# HELP sync_last_end_timestamp_seconds End time of last sync');
-          lines.push('# TYPE sync_last_end_timestamp_seconds gauge');
-          lines.push(`sync_last_end_timestamp_seconds ${Math.floor(endTs / 1000)}`);
-          lines.push('# HELP sync_time_since_last_success_seconds Seconds since last sync finished');
-          lines.push('# TYPE sync_time_since_last_success_seconds gauge');
-          lines.push(`sync_time_since_last_success_seconds ${(nowMs - endTs) / 1000}`);
-        }
-        if (nextCronTs) {
-          lines.push('# HELP sync_next_cron_timestamp_seconds Next cron fire (predicted)');
-          lines.push('# TYPE sync_next_cron_timestamp_seconds gauge');
-          lines.push(`sync_next_cron_timestamp_seconds ${Math.floor(nextCronTs / 1000)}`);
-        }
-        if (nextFullRefreshTs) {
-          lines.push('# HELP sync_next_full_refresh_timestamp_seconds Next full refresh timestamp');
-          lines.push('# TYPE sync_next_full_refresh_timestamp_seconds gauge');
-          lines.push(`sync_next_full_refresh_timestamp_seconds ${Math.floor(nextFullRefreshTs / 1000)}`);
-        }
-        // Last full refresh state
-        try {
-          const lastFull = await getState<number>('incremental:lastFullRefreshTs');
-          if (lastFull) {
-            lines.push('# HELP sync_last_full_refresh_timestamp_seconds Last full refresh (incrementals)');
-            lines.push('# TYPE sync_last_full_refresh_timestamp_seconds gauge');
-            lines.push(`sync_last_full_refresh_timestamp_seconds ${Math.floor(lastFull / 1000)}`);
-          }
-        } catch { }
-        // Entity metrics
-        if (lastSummary) {
-          for (const e of lastSummary.entities) {
-            const lbl = `entity="${e.entity}"`;
-            if (typeof e.fetched === 'number') lines.push(`sync_entity_fetched_total{${lbl}} ${e.fetched}`);
-            if (typeof e.upserted === 'number') lines.push(`sync_entity_upserted_total{${lbl}} ${e.upserted}`);
-            if (typeof e.processed === 'number') lines.push(`sync_entity_processed_total{${lbl}} ${e.processed}`);
-            if (typeof e.pages === 'number') lines.push(`sync_entity_pages_total{${lbl}} ${e.pages}`);
-            if (typeof e.total === 'number') lines.push(`sync_entity_api_total{${lbl}} ${e.total}`);
-            if (typeof e.softDeleted === 'number') lines.push(`sync_entity_soft_deleted_total{${lbl}} ${e.softDeleted}`);
-            if (typeof e.newMax === 'number') lines.push(`sync_entity_newmax{${lbl}} ${e.newMax}`);
-            if (typeof e.lastMax === 'number') lines.push(`sync_entity_lastmax{${lbl}} ${e.lastMax}`);
-            lines.push(`sync_entity_duration_ms{${lbl}} ${e.ms}`);
-            lines.push(`sync_entity_full_refresh{${lbl}} ${e.fullRefresh ? 1 : 0}`);
-            if (e.stoppedReason) {
-              const reason = String(e.stoppedReason).replace(/"/g, '');
-              lines.push(`sync_entity_stop_reason{${lbl},reason="${reason}"} 1`);
-            }
-            if (typeof e.softDeleted === 'number' && typeof e.total === 'number' && e.total > 0) {
-              const ratio = e.softDeleted / e.total;
-              lines.push(`sync_entity_soft_delete_ratio{${lbl}} ${ratio}`);
-            }
-          }
-        }
-        // Rolling stats (last 50 summaries)
-        try {
-          const recent = await SyncSummaryModel.find({}, { durationMs: 1, success: 1 }).sort({ start: -1 }).limit(50).lean();
-          if (recent.length) {
-            const durations = recent.map(r => r.durationMs).filter(Boolean) as number[];
-            if (durations.length) {
-              const avg = durations.reduce((a, b) => a + b, 0) / durations.length;
-              const sorted = [...durations].sort((a, b) => a - b);
-              const p95 = sorted[Math.min(sorted.length - 1, Math.floor(0.95 * sorted.length) - 1)];
-              lines.push('# HELP sync_recent_avg_duration_ms Mean duration (last 50 runs)');
-              lines.push('# TYPE sync_recent_avg_duration_ms gauge');
-              lines.push(`sync_recent_avg_duration_ms ${avg}`);
-              lines.push('# HELP sync_recent_p95_duration_ms 95th percentile duration (last 50 runs)');
-              lines.push('# TYPE sync_recent_p95_duration_ms gauge');
-              lines.push(`sync_recent_p95_duration_ms ${p95}`);
-            }
-            // Success / failure streaks
-            let successStreak = 0, failureStreak = 0;
-            for (const r of recent) { if (r.success) { if (failureStreak === 0) successStreak++; else break; } else { if (successStreak === 0) failureStreak++; else break; } }
-            lines.push('# HELP sync_success_streak Current consecutive success count');
-            lines.push('# TYPE sync_success_streak gauge');
-            lines.push(`sync_success_streak ${successStreak}`);
-            lines.push('# HELP sync_failure_streak Current consecutive failure count');
-            lines.push('# TYPE sync_failure_streak gauge');
-            lines.push(`sync_failure_streak ${failureStreak}`);
-          }
-        } catch { }
-        // Upsert logs last hour per entity (approx activity rate)
-        try {
-          const since = new Date(Date.now() - 3600_000);
-          const entities = ['customers', 'suppliers', 'invoices', 'quotes', 'projects', 'purchases'];
-          lines.push(`# HELP upsert_logs_hour_total Upsert log entries in the last hour per entity`);
-          lines.push('# TYPE upsert_logs_hour_total gauge');
-          for (const ent of entities) {
-            const c = await UpsertLogModel.countDocuments({ entity: ent, ts: { $gte: since } });
-            lines.push(`upsert_logs_hour_total{entity="${ent}"} ${c}`);
-          }
-        } catch { }
-        // Config flags (boolean only)
-        try {
-          const flags = config.flags || {} as Record<string, any>;
-          for (const [k, v] of Object.entries(flags)) {
-            if (typeof v === 'boolean') {
-              lines.push(`# HELP config_flag_${k} Config flag ${k}`);
-              lines.push(`# TYPE config_flag_${k} gauge`);
-              lines.push(`config_flag_${k} ${v ? 1 : 0}`);
-            }
-          }
-        } catch { }
-        // Process metrics
-        try {
-          const mu = process.memoryUsage();
-          lines.push('# HELP process_resident_memory_bytes Resident set size in bytes');
-          lines.push('# TYPE process_resident_memory_bytes gauge');
-          lines.push(`process_resident_memory_bytes ${mu.rss}`);
-          lines.push('# HELP process_heap_used_bytes V8 heap used bytes');
-          lines.push('# TYPE process_heap_used_bytes gauge');
-          lines.push(`process_heap_used_bytes ${mu.heapUsed}`);
-          lines.push('# HELP process_uptime_seconds Process uptime in seconds');
-          lines.push('# TYPE process_uptime_seconds gauge');
-          lines.push(`process_uptime_seconds ${process.uptime()}`);
-          const v = process.versions.node.replace(/"/g, '');
-          lines.push('# HELP node_version_info Node.js version info (value is 1)');
-          lines.push('# TYPE node_version_info gauge');
-          lines.push(`node_version_info{version="${v}"} 1`);
-          // App version metric
-          lines.push('# HELP app_version Application version (value is 1)');
-          lines.push('# TYPE app_version gauge');
-          lines.push(`app_version{version="${APP_VERSION}"} 1`);
-        } catch { }
-        if (!preferHtml || format === 'prom' || format === 'text') {
-          res.statusCode = 200; res.setHeader('Content-Type', 'text/plain; version=0.0.4');
-          return res.end(lines.join('\n') + '\n');
-        }
-        const entityRows = (lastSummary?.entities || []).map(e => `<tr><td>${e.entity}${e.fullRefresh ? ' *' : ''}</td><td>${e.pages ?? 0}</td><td>${e.fetched ?? 0}</td><td>${e.processed ?? ((e.lastMax !== undefined || e.newMax !== undefined) ? 'n/a' : 0)}</td><td>${e.upserted ?? 'n/a'}</td><td>${e.total ?? 0}</td><td>${e.softDeleted ?? 'n/a'}</td><td>${(e.lastMax !== undefined || e.newMax !== undefined) ? (e.lastMax || 0) + '->' + (e.newMax || 0) : 'n/a'}</td><td>${human(e.ms || 0)}</td><td>${e.stoppedReason || ''}</td></tr>`).join('');
-        res.statusCode = 200; res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        const extraSummary = lastSummary ? `<p>Time since last run: <strong>${human(Date.now() - Date.parse(lastSummary.end))}</strong> | Success streak: <strong>${lines.find(l => l.startsWith('sync_success_streak'))?.split(' ').pop()}</strong> | Failure streak: <strong>${lines.find(l => l.startsWith('sync_failure_streak'))?.split(' ').pop()}</strong>${nextCronTs ? ` | Next cron: <code>${new Date(nextCronTs).toLocaleString()}</code>` : ''}${nextFullRefreshTs ? ` | Next full refresh: <code>${new Date(nextFullRefreshTs).toLocaleString()}</code>` : ''}</p>` : '';
-        return res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Metrics</title><style>body{font-family:system-ui,Arial,sans-serif;background:#0f1115;color:#eee;margin:1.2rem;}table{border-collapse:collapse;width:100%;margin-top:1rem;}th,td{border:1px solid #333;padding:4px 6px;font-size:.7rem;}th{background:#1d2229;}tbody tr:nth-child(even){background:#181c22;}pre{background:#181c22;padding:8px;overflow:auto;}a{color:#6cc6ff;text-decoration:none;}a:hover{text-decoration:underline;}</style></head><body>${h1('Metrics')}<div><a href="/">&larr; Dashboard</a> | <a href="/metrics?format=prom" >Plain Text</a></div><h2>High-level</h2><ul><li>Total Runs: <strong>${totalRuns}</strong></li><li>Total Failures: <strong>${totalFailures}</strong></li><li>Last Duration: <strong>${human(lastDurationMs)}</strong></li><li>In Progress: <strong>${inProgress ? 'yes' : 'no'}</strong></li><li>Last Success: <strong>${lastSummary ? (lastSummary.success ? 'yes' : 'no') : 'n/a'}</strong></li></ul>${extraSummary}<h2>Entities (Last Run)</h2><table><thead><tr><th>Entity</th><th>Pages</th><th>Fetched</th><th>Processed</th><th>Upserted</th><th>API Total</th><th>Soft Deleted</th><th>LastMax→NewMax</th><th>Duration</th><th>Stop Reason</th></tr></thead><tbody>${entityRows || '<tr><td colspan=10>No data</td></tr>'}</tbody></table><div style="font-size:.6rem;opacity:.7;margin-top:.3rem;">* full refresh traversal</div><h2>Raw</h2><pre>${lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('\n')}</pre><script>setInterval(()=>{fetch('/metrics?format=prom').then(r=>r.text()).then(t=>{document.querySelector('pre').textContent=t;});},5000);</script></body></html>`);
+        return handleMetrics(req, res, accept as string);
       })();
     }
 
     // /sync-summary (latest)
     else if (url.startsWith('/sync-summary')) {
-      const wantsJson = url.includes('format=json') || (accept.includes('application/json') && !accept.includes('text/html'));
-      const data = getLastSummary(); // Fetch the last summary
-      if (wantsJson) { res.statusCode = 200; res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify(data)); }
-      const { lastSummary, inProgress } = data;
-      res.statusCode = 200; res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      if (!lastSummary) return res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Sync Summary</title></head><body style="font-family:system-ui,Arial,sans-serif;background:#0f1115;color:#eee;margin:1.2rem;">${h1('Sync Summary')}<p>No completed sync yet. ${inProgress ? 'In progress...' : ''}</p><p><a href="/">&larr; Dashboard</a></p></body></html>`);
-      const rows = (lastSummary.entities || []).map((e: any) => { const incr = (e.lastMax !== undefined) || (e.newMax !== undefined) || (e.upserted !== undefined); const proc = e.processed !== undefined ? e.processed : (incr ? 'n/a' : 0); const ups = e.upserted !== undefined ? e.upserted : (incr ? 0 : 'n/a'); const soft = e.softDeleted !== undefined ? e.softDeleted : (incr ? 'n/a' : 0); const range = (e.lastMax !== undefined || e.newMax !== undefined) ? `${e.lastMax || 0}->${e.newMax || 0}` : 'n/a'; return `<tr><td>${e.entity}</td><td>${e.pages || 0}</td><td>${e.fetched || 0}</td><td>${proc}</td><td>${ups}</td><td>${e.total || 0}</td><td>${soft}</td><td>${range}</td><td title="${e.ms} ms">${human(e.ms)}</td><td>${e.stoppedReason || ''}</td></tr>`; }).join('');
-      return res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Latest Sync Summary</title><style>body{font-family:system-ui,Arial,sans-serif;background:#0f1115;color:#eee;margin:1.2rem;}table{border-collapse:collapse;width:100%;margin-top:1rem;}th,td{border:1px solid #333;padding:6px 8px;font-size:.75rem;}th{background:#1d2229;}tbody tr:nth-child(even){background:#181c22;}</style></head><body>${h1('Latest Sync Summary')}<div>Status: ${lastSummary.success ? '<span style="color:#6cc644">SUCCESS</span>' : '<span style="color:#ff5555">FAIL</span>'}</div><div>Start: <code>${new Date(lastSummary.start).toLocaleString()}</code> | End: <code>${new Date(lastSummary.end).toLocaleString()}</code> | Duration: <code>${human(lastSummary.durationMs || 0)}</code> ${inProgress ? ' | <em>In Progress</em>' : ''}</div>${lastSummary.error ? `<div style=\"color:#ff5555\">Error: ${lastSummary.error}</div>` : ''}<div style="margin-top:.5rem"><a href="/">&larr; Dashboard</a> | <a href="/sync-summary?format=json" >Raw JSON</a> | <a href="/summaries">All Summaries</a></div><table><thead><tr><th>Entity</th><th>Pages</th><th>Fetched</th><th>Processed</th><th>Upserted</th><th>API Total</th><th>Soft Deleted</th><th>LastMax→NewMax</th><th>Duration</th><th>Stop Reason</th></tr></thead><tbody>${rows}</tbody></table></body></html>`);
+      return handleSyncSummary(req, res, accept as string);
     }
 
     // /summaries list
     else if (url.startsWith('/summaries')) {
-      const u = new URL(url, 'http://x');
-      const limit = Math.min(200, parseInt(u.searchParams.get('limit') || '25', 10));
-      const wantsJson = url.includes('format=json') || (accept.includes('application/json') && !accept.includes('text/html'));
-      (async () => {
-        try {
-          const docs = await SyncSummaryModel.find({}, { entities: 1, start: 1, end: 1, durationMs: 1, success: 1, error: 1 }).sort({ start: -1 }).limit(limit).lean();
-          if (wantsJson) { res.statusCode = 200; res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify(docs)); }
-          const rows = docs.map(d => { const started = d.start ? new Date(d.start as any).toLocaleString() : ''; const ended = d.end ? new Date(d.end as any).toLocaleString() : ''; return `<tr data-id="${d._id}"><td>${started}</td><td>${ended}</td><td>${human(d.durationMs || 0)}</td><td>${d.success ? '✔' : '✖'}</td><td>${d.error ? String(d.error).substring(0, 40) : ''}</td><td>${(d.entities || []).length}</td></tr>`; }).join('');
-          res.statusCode = 200; res.setHeader('Content-Type', 'text/html; charset=utf-8');
-          return res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Sync Summaries</title><style>body{font-family:system-ui,Arial,sans-serif;background:#0f1115;color:#eee;margin:1.2rem;}table{border-collapse:collapse;width:100%;margin-top:1rem;}th,td{border:1px solid #333;padding:6px 8px;font-size:.75rem;}th{background:#1d2229;}tbody tr:nth-child(even){background:#181c22;}tr{cursor:pointer;}a{color:#6cc6ff;text-decoration:none;}a:hover{text-decoration:underline;}</style></head><body>${h1('Sync Summaries')}<div><a href="/">&larr; Dashboard</a> | <a href="/summaries?format=json" >Raw JSON</a></div><table><thead><tr><th>Start</th><th>End</th><th>Duration</th><th>Success</th><th>Error</th><th>Entities</th></tr></thead><tbody>${rows}</tbody></table><script>document.querySelectorAll('tr[data-id]').forEach(r=>r.addEventListener('click',()=>{window.location='/summary/'+r.getAttribute('data-id');}));</script></body></html>`);
-        } catch (e) { res.statusCode = 500; res.end('Error'); }
-      })();
+      return handleSummaries(req, res, accept as string);
     }
 
     // /summary/:id
     else if (url.startsWith('/summary/')) {
-      const id = url.split('/').pop();
-      (async () => {
-        try {
-          const doc = await SyncSummaryModel.findById(id).lean();
-          if (!doc) { res.statusCode = 404; return res.end('Not found'); }
-          const wantsJson = url.includes('format=json') || (accept.includes('application/json') && !accept.includes('text/html'));
-          if (wantsJson) { res.statusCode = 200; res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify(doc)); }
-          const esc = (s: string) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
-          const rows = (doc.entities || []).map((e: any) => { const incr = (e.lastMax !== undefined) || (e.newMax !== undefined) || (e.upserted !== undefined); const processed = e.processed !== undefined ? e.processed : (incr ? 'n/a' : 0); const upserted = e.upserted !== undefined ? e.upserted : (incr ? 0 : 'n/a'); const soft = e.softDeleted !== undefined ? e.softDeleted : (incr ? 'n/a' : 0); const range = (e.lastMax !== undefined || e.newMax !== undefined) ? `${e.lastMax || 0}->${e.newMax || 0}` : 'n/a'; return `<tr><td>${esc(e.entity)}</td><td>${e.pages ?? 0}</td><td>${e.fetched ?? 0}</td><td>${processed}</td><td>${upserted}</td><td>${e.total ?? 0}</td><td>${soft}</td><td>${range}</td><td>${human(e.ms || 0)}</td><td>${e.stoppedReason || ''}</td></tr>`; }).join('');
-          res.statusCode = 200; res.setHeader('Content-Type', 'text/html; charset=utf-8');
-          return res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Sync Summary ${esc(id || '')}</title><style>body{font-family:system-ui,Arial,sans-serif;background:#0f1115;color:#eee;margin:1.3rem;}table{border-collapse:collapse;width:100%;margin-top:1rem;}th,td{border:1px solid #333;padding:6px 8px;font-size:.75rem;}th{background:#1d2229;}tbody tr:nth-child(even){background:#181c22;}a{color:#6cc6ff;text-decoration:none;}a:hover{text-decoration:underline;}</style></head><body>${h1('Sync Summary')}<div>ID: <code>${esc(id || '')}</code> | Start: <code>${doc.start ? new Date(doc.start as any).toLocaleString() : ''}</code> | End: <code>${doc.end ? new Date(doc.end as any).toLocaleString() : ''}</code> | Duration: <code>${human(doc.durationMs || 0)}</code> | Success: <strong>${doc.success ? 'yes' : 'no'}</strong></div>${doc.error ? `<div style=\"color:#ff5555\">Error: ${esc(doc.error)} </div>` : ''}<div style="margin-top:.4rem"><a href="/">&larr; Dashboard</a> | <a href="/summary/${esc(id || '')}?format=json" >Raw JSON</a></div><table><thead><tr><th>Entity</th><th>Pages</th><th>Fetched</th><th>Processed</th><th>Upserted</th><th>API Total</th><th>Soft Deleted</th><th>LastMax→NewMax</th><th>Duration</th><th>Stop Reason</th></tr></thead><tbody>${rows}</tbody></table></body></html>`);
-        } catch (e) { res.statusCode = 500; res.end('Error'); }
-      })();
+      return handleSummary(req, res, accept as string);
     }
 
     // /trigger-sync (local only)
     else if (url.startsWith('/trigger-sync')) {
-      const remote = req.socket.remoteAddress;
-      const isLocal = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
-      const allowed = isLocal || !!config.metrics.allowRemoteTrigger;
-      if (!allowed) { res.statusCode = 403; return res.end('Forbidden'); }
-      if (req.method !== 'POST') { res.statusCode = 405; return res.end('Method Not Allowed'); }
-      const { inProgress } = getLastSummary();
-      if (inProgress) { res.statusCode = 409; return res.end('Sync already in progress'); }
-      runSync().then(() => { const { lastSummary } = getLastSummary(); if (lastSummary) noteRun(lastSummary.success, lastSummary.durationMs); }).catch(err => logger.error({ err }, 'Manual sync failed'));
-      res.statusCode = 202; return res.end('Sync triggered');
+      return handleTriggerSync(req, res);
+    }
+
+    // /logs (HTML/JSON)
+    else if (url.startsWith('/logs') && !url.startsWith('/logs/stream')) {
+      return handleLogs(req, res, accept as string);
+    }
+
+    // /logs/stream (SSE)
+    else if (url.startsWith('/logs/stream')) {
+      return handleLogsStream(req, res);
+    }
+
+    // /upserts (HTML/JSON)
+    else if (url.startsWith('/upserts')) {
+      return handleUpserts(req, res, accept as string);
     }
 
     else {
