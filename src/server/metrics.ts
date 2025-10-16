@@ -6,13 +6,12 @@ import { getLastSummary, setNextCron, setNextFullRefresh } from '../sync/summary
 import { SyncSummaryModel } from '../db/models.js';
 import { getState } from '../sync/state.js';
 import { APP_VERSION } from '../version.js';
-import { handleMetrics, handleTriggerSync } from './metrics/routes.js';
+import { handleTriggerSync } from './metrics/routes.js';
 import { handleSyncSummary, handleSummaries, handleSummary } from '../server/controllers/summariesController.js';
-import { getCounters, noteRun as noteRunCounters } from './metrics/metricsState.js';
 import { handleLogs, handleLogsStream } from '../server/controllers/logsController.js';
 import { handleUpserts } from '../server/controllers/upsertsController.js';
 
-export const noteRun = noteRunCounters;
+// noteRun counters removed with Prometheus; keep server minimal
 
 function human(ms: number) {
   if (ms < 1000) return ms + ' ms';
@@ -101,7 +100,6 @@ export function startMetricsServer() {
     <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:.5rem;">
       <button type="button" id="triggerBtn">Trigger Sync</button>
       <button type="button" id="historyBtn">Show History</button>
-      <button type="button" class="navBtn" data-link="/metrics">Metrics</button>
       <button type="button" class="navBtn" data-link="/upserts">Upserts</button>
       <button type="button" class="navBtn" data-link="/sync-summary">Latest Summary</button>
       <button type="button" class="navBtn" data-link="/summaries">All Summaries</button>
@@ -133,7 +131,7 @@ export function startMetricsServer() {
         <tbody></tbody>
       </table>
     </div>
-    <p style="margin-top:1rem;font-size:.75rem;">Shortcuts: <a href="/metrics">/metrics</a> · <a href="/sync-summary">/sync-summary</a> · <a href="/summaries">/summaries</a> · <a href="/upserts">/upserts</a> · <a href="/logs">/logs</a></p>
+  <p style="margin-top:1rem;font-size:.75rem;">Shortcuts: <a href="/sync-summary">/sync-summary</a> · <a href="/summaries">/summaries</a> · <a href="/upserts">/upserts</a> · <a href="/logs">/logs</a></p>
     <div id="miniLogs" style="margin-top:1rem;">
       <h2 style="margin:0 0 .4rem;font-size:1rem;">Live Logs <small id="miniStatus" style="opacity:.7"></small></h2>
       <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.4rem;">
@@ -341,15 +339,7 @@ export function startMetricsServer() {
 </html>`);
     }
 
-    // /metrics (Prometheus or HTML)
-    else if (url.startsWith('/metrics')) {
-      (async () => {
-        const u = new URL(url, 'http://x');
-        const format = (u.searchParams.get('format') || '').toLowerCase();
-        const preferHtml = format === 'html' || (!format && accept.includes('text/html') && !accept.includes('text/plain'));
-        return handleMetrics(req, res, accept as string);
-      })();
-    }
+    // (Prometheus /metrics endpoint removed)
 
     // /sync-summary (latest)
     else if (url.startsWith('/sync-summary')) {
