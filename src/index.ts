@@ -6,7 +6,6 @@ import cron from 'node-cron';
 import { config } from './config.js';
 import { startMetricsServer } from './server/metrics.js';
 import { getLastSummary, setNextCron, setNextFullRefresh } from './sync/summary.js';
-import { noteRun } from './server/metrics.js';
 import { getState, setState } from './sync/state.js';
 
 async function bootstrap() {
@@ -42,7 +41,6 @@ async function bootstrap() {
                 try {
                     await runSync();
                     const { lastSummary } = getLastSummary();
-                    if (lastSummary) noteRun(lastSummary.success, lastSummary.durationMs);
                     // After run, compute next cron timestamp
                     try {
                         const parserMod: any = await import('cron-parser');
