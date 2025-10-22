@@ -70,12 +70,23 @@ const supplierSchema = new mongoose.Schema(
         IsArchived: Boolean,
         // REST can return string values like "Domestic"; normalize to string
         TradeBorderType: { type: String, set: (v: unknown) => (v == null ? (v as any) : String(v)) },
+        // Additional flags/fields for VAT/CIS/withholding and source attribution
+        IsCISReverseCharge: Boolean,
+        ApplyWithholdingTax: Boolean,
+        IsVatRateEnabled: Boolean,
+        DefaultVatRate: Number,
+        VatExempt: Boolean,
+        DoesSupplierHasTransactionsInVATReturn: Boolean,
+        SourceName: String,
         PaymentTerms: mongoose.Schema.Types.Mixed,
         Currency: mongoose.Schema.Types.Mixed,
         Contacts: [mongoose.Schema.Types.Mixed],
         Address: mongoose.Schema.Types.Mixed,
         DeliveryAddresses: [mongoose.Schema.Types.Mixed],
         // Additional fields requested
+        // Some tenants expose a boolean "uses default PDF theme" flag; keep both variants for compatibility
+        UsesDefaultPdfTheme: Boolean,
+        UsesDefaultPdftTheme: Boolean,
         DefaultPdfTheme: Number,
         PaymentMethod: Number,
         CreateSupplierCodeIfDuplicate: Boolean,
@@ -83,6 +94,10 @@ const supplierSchema = new mongoose.Schema(
         UniqueEntityNumber: String,
         WithholdingTaxRate: Number,
         WithholdingTaxReferences: mongoose.Schema.Types.Mixed,
+    // Additional fields seen in detail response
+    BankAccount: mongoose.Schema.Types.Mixed,
+    BilledNetAmount: Number,
+    BilledVatAmount: Number,
         ...common,
     },
     { collection: 'suppliers', strict: false }

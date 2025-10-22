@@ -14,8 +14,10 @@ export interface Purchase {
 export interface Paged<T> { items: T[]; page: number; perpage: number; total: number; nextPageUrl?: string }
 
 // Allowed sortby (per docs): Number, Supplierreference, SupplierName, PurchaseDate, PaymentDueDate, GrossAmount, NetAmount, Status, PaidDate
-export async function fetchPurchases(page = 1, perpage = 100, params: Partial<Record<string, string | number>> = {}) {
-    const raw = await getWithRetry<any>('/purchases', { page, perpage, sortby: 'Number', order: 'Asc', ...params });
+export async function fetchPurchases(page = 1, perpage = 100, params: Partial<Record<string, string | number>> = {}, nextUrl?: string) {
+    const raw = nextUrl
+        ? await getWithRetry<any>(nextUrl)
+        : await getWithRetry<any>('/purchases', { page, perpage, sortby: 'Number', order: 'Asc', ...params });
     if (page === 1) {
         const keys = raw && typeof raw === 'object' ? Object.keys(raw) : [];
         logger.info({ keys, rawType: Array.isArray(raw) ? 'array' : typeof raw }, 'Purchases raw response shape');

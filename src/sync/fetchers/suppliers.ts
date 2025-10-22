@@ -10,9 +10,11 @@ export interface Supplier {
 
 export interface Paged<T> { items: T[]; page: number; perpage: number; total: number; nextPageUrl?: string }
 
-export async function fetchSuppliers(page = 1, perpage = 250) {
+export async function fetchSuppliers(page = 1, perpage = 250, nextUrl?: string) {
     // Allowed sortby: Name, Code, TotalPaidAmount, OutstandingBalance
-    const raw = await getWithRetry<any>('/suppliers', { page, perpage, sortby: 'Name', order: 'Asc' });
+    const raw = nextUrl
+        ? await getWithRetry<any>(nextUrl)
+        : await getWithRetry<any>('/suppliers', { page, perpage, sortby: 'Name', order: 'Asc' });
     if (page === 1) {
         const keys = raw && typeof raw === 'object' ? Object.keys(raw) : [];
         logger.info({ keys, rawType: Array.isArray(raw) ? 'array' : typeof raw }, 'Suppliers raw response shape');
@@ -31,4 +33,10 @@ export async function fetchSuppliers(page = 1, perpage = 250) {
     const hasNextByCount = items.length === meta.perpage && (meta.total === 0 || (meta.page * meta.perpage) < meta.total);
     logger.info({ page: meta.page, perpage: meta.perpage, total: meta.total, count: items.length, hasNextByCount, nextPageUrl: !!nextPageUrl }, 'Fetched suppliers page');
     return { items: items as Supplier[], ...meta, nextPageUrl: nextPageUrl ?? undefined } as Paged<Supplier>;
+}
+
+// Fetch full supplier detail by Code (preferred where API supports /suppliers/{code})
+export async function fetchSupplierDetailByCode(code: string) {
+    const raw = await getWithRetry<any>(`/suppliers/${encodeURIComponent(code)}`);
+    return raw;
 }

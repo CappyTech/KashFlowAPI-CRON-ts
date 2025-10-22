@@ -2,12 +2,12 @@ import { Mutex } from 'async-mutex';
 import logger from '../util/logger.js';
 import { getState, setState } from './state.js';
 import config from '../config.js';
-import { fetchCustomers } from './fetchers/customers.js';
-import { fetchSuppliers } from './fetchers/suppliers.js';
+import { fetchCustomers, fetchCustomerDetailByCode } from './fetchers/customers.js';
+import { fetchSuppliers, fetchSupplierDetailByCode } from './fetchers/suppliers.js';
 import { fetchPurchases, fetchPurchaseDetailByPermalink, fetchPurchaseDetailById, fetchPurchaseDetailByNumber } from './fetchers/purchases.js';
-import { fetchInvoices } from './fetchers/invoices.js';
-import { fetchQuotes } from './fetchers/quotes.js';
-import { fetchProjects } from './fetchers/projects.js';
+import { fetchInvoices, fetchInvoiceDetailByNumber } from './fetchers/invoices.js';
+import { fetchQuotes, fetchQuoteDetailByNumber } from './fetchers/quotes.js';
+import { fetchProjects, fetchProjectDetailByNumber } from './fetchers/projects.js';
 import { CustomerModel, SupplierModel, PurchaseModel, InvoiceModel, QuoteModel, ProjectModel, UpsertLogModel } from '../db/models.js';
 import { findDocumentByPurchaseNumber } from '../integrations/paperless.js';
 import { markSyncStart, setLastSummary, EntitySummaryBase } from './summary.js';
@@ -15,6 +15,21 @@ import { SyncSummaryModel } from '../db/models.js';
 
 const mutex = new Mutex();
 const DIFF_FIELD_LIMIT = 40;
+// Small helpers for reliability patterns
+function sleep(ms: number) { return new Promise(res => setTimeout(res, ms)); }
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, idx: number) => Promise<R>): Promise<R[]> {
+    const results: R[] = new Array(items.length) as any;
+    let idx = 0;
+    const workers = new Array(Math.min(limit, Math.max(1, items.length))).fill(0).map(async () => {
+        while (true) {
+            const i = idx++;
+            if (i >= items.length) break;
+            results[i] = await fn(items[i], i);
+        }
+    });
+    await Promise.all(workers);
+    return results;
+}
 
 // Narrow shape for updateOne results (enough to eliminate @ts-ignore usage)
 type UpdateResultLike = {
@@ -107,6 +122,8 @@ export async function runSync() {
             const runIdCustomers = new Date().toISOString();
             const lastCursorCust = (await getState<number>('customers:lastPage')) || 0;
             let pageCust = lastCursorCust || 1;
+            let nextUrlCust = (await getState<string>('customers:lastPageUrl')) || '';
+            const resumeAfterCode = (await getState<string>('customers:lastProcessedCode')) || '';
             const perpageCust = 100;
             const fullTraverseCustomers = pageCust === 1;
             let fetchedCust = 0;
@@ -115,13 +132,15 @@ export async function runSync() {
             let completedFullCust = false;
             let pagesCust = 0;
             let softDeletedCust = 0;
+            let detailOkCust = 0;
+            let detailFailCust = 0;
             let purchasesWithLineItems = 0;
             let purchasesNeedingDetail = 0;
             let detailFromPermalink = 0;
             let detailFromId = 0;
             let detailFromNumber = 0;
             while (true) {
-                const res = await fetchCustomers(pageCust, perpageCust);
+                const res = await fetchCustomers(pageCust, perpageCust, nextUrlCust || undefined);
                 const items = res.items || [];
                 pagesCust += 1;
                 fetchedCust += items.length;
@@ -130,14 +149,35 @@ export async function runSync() {
                     const pct = totalCust ? Math.min(100, (fetchedCust / totalCust) * 100) : 0;
                     logger.info({ entity: 'customers', page: pageCust, pageSize: items.length, cumulative: fetchedCust, total: totalCust, pct: Number(pct.toFixed(2)) }, 'Customers progress');
                 }
+                let skipPast = !!nextUrlCust && !!resumeAfterCode;
                 for (const c of items) {
+                    if (skipPast) {
+                        if (c.Code === resumeAfterCode) { skipPast = false; continue; }
+                        else { continue; }
+                    }
                     const existing = await CustomerModel.findOne({ Code: c.Code }).lean();
+                    // Fetch full customer detail only if missing key fields or LastUpdatedDate changed
+                    let fullC: any = c;
+                    try {
+                        const wanted = ['Addresses','DeliveryAddresses','CustomTextBoxes','CustomCheckBoxes','EnvelopeUrl'];
+                        const incomingHasWanted = wanted.some(k => (c as any)[k] !== undefined);
+                        const existingMissingWanted = wanted.some(k => !existing || (existing as any)[k] === undefined);
+                        const parsedIncomingLU = c.LastUpdatedDate ? new Date(c.LastUpdatedDate) : undefined;
+                        const existingLU = existing && (existing as any).LastUpdatedDate instanceof Date ? (existing as any).LastUpdatedDate as unknown as Date : undefined;
+                        const lastUpdatedChanged = !!(parsedIncomingLU && existingLU && existingLU.getTime() !== parsedIncomingLU.getTime());
+                        if ((!incomingHasWanted && existingMissingWanted) || lastUpdatedChanged) {
+                            if (c.Code) {
+                                const detail = await fetchCustomerDetailByCode(c.Code);
+                                if (detail && typeof detail === 'object') { fullC = { ...c, ...detail }; detailOkCust += 1; }
+                            }
+                        }
+                    } catch { detailFailCust += 1; }
                     let updateDoc = {
-                        ...c,
+                        ...fullC,
                         LastUpdatedDate: c.LastUpdatedDate ? new Date(c.LastUpdatedDate) : undefined,
-                        CreatedDate: (c as any).CreatedDate ? new Date((c as any).CreatedDate as any) : (c as any).CreatedDate,
-                        FirstInvoiceDate: (c as any).FirstInvoiceDate ? new Date((c as any).FirstInvoiceDate as any) : (c as any).FirstInvoiceDate,
-                        LastInvoiceDate: (c as any).LastInvoiceDate ? new Date((c as any).LastInvoiceDate as any) : (c as any).LastInvoiceDate,
+                        CreatedDate: (fullC as any).CreatedDate ? new Date((fullC as any).CreatedDate as any) : (fullC as any).CreatedDate,
+                        FirstInvoiceDate: (fullC as any).FirstInvoiceDate ? new Date((fullC as any).FirstInvoiceDate as any) : (fullC as any).FirstInvoiceDate,
+                        LastInvoiceDate: (fullC as any).LastInvoiceDate ? new Date((fullC as any).LastInvoiceDate as any) : (fullC as any).LastInvoiceDate,
                         updatedAt: new Date(),
                         lastSeenRun: runIdCustomers,
                     } as any;
@@ -167,21 +207,30 @@ export async function runSync() {
                         logger.debug({ entity: 'customers', code: c.Code, wasInserted, modifiedCount: (res as any).modifiedCount }, 'Customer upsert');
                     }
                 }
-                if (items.length === 0 && pageCust > 1) {
+                // Persist resume pointers for this page
+                try { if (items.length) await setState('customers:lastProcessedCode', items[items.length - 1].Code); } catch {}
+                if (items.length === 0 && (pageCust > 1 || nextUrlCust)) {
                     // End reached; mark traversal completed only if started at page 1
                     completedFullCust = fullTraverseCustomers;
                     await setState('customers:lastPage', 0);
+                    await setState('customers:lastPageUrl', '');
+                    await setState('customers:lastProcessedCode', '');
                     break;
                 }
                 await setState('customers:lastPage', pageCust);
                 if (res.nextPageUrl) {
-                    pageCust += 1;
+                    await setState('customers:lastPageUrl', res.nextPageUrl);
+                    nextUrlCust = res.nextPageUrl;
+                    await sleep(100 + Math.floor(Math.random() * 200));
                 } else {
                     // No next page reported: traversal complete
                     completedFullCust = fullTraverseCustomers;
                     await setState('customers:lastPage', 0);
+                    await setState('customers:lastPageUrl', '');
+                    await setState('customers:lastProcessedCode', '');
                     break;
                 }
+                pageCust += 1;
             }
             if (fetchedCust > 0 && completedFullCust) {
                 const resSD = await CustomerModel.updateMany(
@@ -192,7 +241,7 @@ export async function runSync() {
                 softDeletedCust = (rSD && (rSD.modifiedCount ?? 0)) as number;
             }
             const custMs = Date.now() - custStart;
-            logger.info({ pages: pagesCust, fetched: fetchedCust, processed: fetchedCust, upserted: upsertedCust, total: totalCust, softDeleted: softDeletedCust, ms: custMs }, 'Customers sync completed');
+            logger.info({ pages: pagesCust, fetched: fetchedCust, processed: fetchedCust, upserted: upsertedCust, total: totalCust, softDeleted: softDeletedCust, detailOk: detailOkCust, detailFail: detailFailCust, ms: custMs }, 'Customers sync completed');
             entities.push({ entity: 'customers', pages: pagesCust, fetched: fetchedCust, processed: fetchedCust, upserted: upsertedCust, total: totalCust, softDeleted: softDeletedCust, ms: custMs });
             // Compare DB vs API totals only when we performed a full traversal (safe for soft-deletes)
             if (completedFullCust) {
@@ -214,6 +263,8 @@ export async function runSync() {
             const runIdSup = new Date().toISOString();
             const lastCursorSup = (await getState<number>('suppliers:lastPage')) || 0;
             let pageSup = lastCursorSup || 1;
+            let nextUrlSup = (await getState<string>('suppliers:lastPageUrl')) || '';
+            const resumeAfterSupCode = (await getState<string>('suppliers:lastProcessedCode')) || '';
             const perpageSup = 250;
             const fullTraverseSuppliers = pageSup === 1;
             let fetchedSup = 0;
@@ -225,7 +276,7 @@ export async function runSync() {
             let pagesSup = 0;
             let softDeletedSup = 0;
             while (true) {
-                const res = await fetchSuppliers(pageSup, perpageSup);
+                const res = await fetchSuppliers(pageSup, perpageSup, nextUrlSup || undefined);
                 const items = res.items || [];
                 pagesSup += 1;
                 fetchedSup += items.length;
@@ -234,9 +285,35 @@ export async function runSync() {
                     const pct = totalSup ? Math.min(100, (fetchedSup / totalSup) * 100) : 0;
                     logger.info({ entity: 'suppliers', page: pageSup, pageSize: items.length, cumulative: fetchedSup, total: totalSup, pct: Number(pct.toFixed(2)), looped: loopedSup }, 'Suppliers progress');
                 }
+                let skipPastSup = !!nextUrlSup && !!resumeAfterSupCode;
                 for (const s of items) {
+                    if (skipPastSup) {
+                        if (s.Code === resumeAfterSupCode) { skipPastSup = false; continue; }
+                        else { continue; }
+                    }
                     const existingSup = await SupplierModel.findOne({ Code: s.Code }).lean();
-                    let updateSup = { ...s, LastUpdatedDate: s.LastUpdatedDate ? new Date(s.LastUpdatedDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdSup } as any;
+                    // Enrich from detail if key fields are missing or LastUpdatedDate changed
+                    let enriched = s as any;
+                    try {
+                        const wanted = ['UsesDefaultPdfTheme','UsesDefaultPdftTheme','WithholdingTaxReferences','IsCISReverseCharge','ApplyWithholdingTax','IsVatRateEnabled','DefaultVatRate','VatExempt','DoesSupplierHasTransactionsInVATReturn','SourceName'];
+                        const incomingHasWanted = wanted.some(k => enriched && enriched[k] !== undefined);
+                        const existingMissingWanted = wanted.some(k => !existingSup || (existingSup as any)[k] === undefined);
+                        const parsedIncomingLU = s.LastUpdatedDate ? new Date(s.LastUpdatedDate) : undefined;
+                        const existingLU = existingSup && (existingSup as any).LastUpdatedDate instanceof Date ? (existingSup as any).LastUpdatedDate as unknown as Date : undefined;
+                        const lastUpdatedChanged = !!(parsedIncomingLU && existingLU && existingLU.getTime() !== parsedIncomingLU.getTime());
+                        if ((!incomingHasWanted && existingMissingWanted) || lastUpdatedChanged) {
+                            let detail: any = null;
+                            if (s.Code) {
+                                try { detail = await fetchSupplierDetailByCode(s.Code); } catch {/* ignore single supplier detail failures */}
+                            } else if (config.flags.upsertLogs) {
+                                logger.debug({ supplierId: s.Id }, 'Skip supplier detail enrichment (missing Code)');
+                            }
+                            if (detail && typeof detail === 'object') {
+                                enriched = { ...enriched, ...detail };
+                            }
+                        }
+                    } catch {}
+                    let updateSup = { ...enriched, LastUpdatedDate: enriched.LastUpdatedDate ? new Date(enriched.LastUpdatedDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdSup } as any;
                     updateSup = mergeNestedObjects(existingSup, updateSup, ['Currency', 'PaymentTerms', 'Address']);
                     if (existingSup?.uuid) updateSup.uuid = (existingSup as any).uuid;
                     const { changedFields: changedFieldsSup, changes: changesSup } = diffDocs(existingSup, updateSup);
@@ -257,16 +334,20 @@ export async function runSync() {
                         logger.debug({ entity: 'suppliers', code: s.Code, wasInserted, modifiedCount: (res as any).modifiedCount }, 'Supplier upsert');
                     }
                 }
+                // Persist resume pointers for this page
+                try { if (items.length) await setState('suppliers:lastProcessedCode', items[items.length - 1].Code); } catch {}
                 const exhaustedTotal = fetchedSup >= totalSup && totalSup > 0;
-                if (items.length === 0 && pageSup > 1) {
+                if (items.length === 0 && (pageSup > 1 || nextUrlSup)) {
                     // Went past the last page; if we haven't looped and didn't start at page 1, wrap to beginning.
-                    if (!loopedSup && initialPageSup > 1) {
+                    if (!loopedSup && initialPageSup > 1 && !nextUrlSup) {
                         loopedSup = true;
                         pageSup = 1;
                         continue;
                     }
                     completedFullSup = true;
                     await setState('suppliers:lastPage', 0);
+                    await setState('suppliers:lastPageUrl', '');
+                    await setState('suppliers:lastProcessedCode', '');
                     break;
                 }
                 // Persist progress for observability (so restarts don’t repeat too much)
@@ -274,15 +355,25 @@ export async function runSync() {
                 if (exhaustedTotal) {
                     completedFullSup = true;
                     await setState('suppliers:lastPage', 0);
+                    await setState('suppliers:lastPageUrl', '');
+                    await setState('suppliers:lastProcessedCode', '');
                     break;
                 }
-                // No strong nextPageUrl from API? Continue by incrementing page numerically.
-                // If we eventually hit an empty page, the earlier check will wrap/finish accordingly.
-                pageSup += 1;
+                if (res.nextPageUrl) {
+                    await setState('suppliers:lastPageUrl', res.nextPageUrl);
+                    nextUrlSup = res.nextPageUrl;
+                    await sleep(100 + Math.floor(Math.random() * 200));
+                } else {
+                    // No strong nextPageUrl from API? Continue by incrementing page numerically.
+                    // If we eventually hit an empty page, the earlier check will wrap/finish accordingly.
+                    pageSup += 1;
+                }
                 if (loopedSup && pageSup >= initialPageSup) {
                     // We’ve completed wrap-around up to the starting page; finish
                     completedFullSup = true;
                     await setState('suppliers:lastPage', 0);
+                    await setState('suppliers:lastPageUrl', '');
+                    await setState('suppliers:lastProcessedCode', '');
                     break;
                 }
             }
@@ -320,6 +411,7 @@ export async function runSync() {
                 if (lastMaxInv) await setState('invoices:lastMaxNumber', lastMaxInv);
             }
             let pageInv = 1;
+            let nextUrlInv: string | undefined = undefined;
             const perpageInv = 50; // reduce to lower payload size and mitigate timeouts
             let fetchedInv = 0;
             let totalInv = 0;
@@ -328,17 +420,34 @@ export async function runSync() {
             let upsertedInv = 0;
             let pagesInv = 0;
             let stoppedReasonInv: string | undefined;
+            let detailOkInv = 0;
+            let detailFailInv = 0;
             while (true) {
-                const res = await fetchInvoices(pageInv, perpageInv, { order: 'Desc' });
+                const res = await fetchInvoices(pageInv, perpageInv, { order: 'Desc' }, nextUrlInv);
                 const items = res.items || [];
                 pagesInv += 1;
                 fetchedInv += items.length;
                 totalInv = res.total || totalInv;
+                // Prefetch details for new items with bounded concurrency
+                const newItems = items.filter(i => doFullRefreshIncrementals || (i.Number && i.Number > lastMaxInv));
+                const details = await mapLimit(newItems, 8, async (it) => {
+                    try {
+                        if (typeof it.Number === 'number') {
+                            const detail = await fetchInvoiceDetailByNumber(it.Number);
+                            if (detail && typeof detail === 'object') { detailOkInv += 1; return { key: it.Number, detail }; }
+                        }
+                    } catch { detailFailInv += 1; }
+                    return { key: it.Number, detail: null as any };
+                });
+                const detailMap = new Map<number, any>(details.map(d => [d.key, d.detail]));
                 for (const i of items) {
                     if (i.Number && i.Number > newMaxInv) newMaxInv = i.Number;
                     if (!doFullRefreshIncrementals && i.Number && i.Number <= lastMaxInv) { reachedOldInv = true; continue; }
                     const existingInv = await InvoiceModel.findOne({ Number: i.Number }).lean();
-                    let updateInv = { ...i, IssuedDate: i.IssuedDate ? new Date(i.IssuedDate) : undefined, DueDate: i.DueDate ? new Date(i.DueDate) : undefined, LastPaymentDate: i.LastPaymentDate ? new Date(i.LastPaymentDate) : i.LastPaymentDate, PaidDate: i.PaidDate ? new Date(i.PaidDate) : i.PaidDate, updatedAt: new Date(), lastSeenRun: runIdInv } as any;
+                    let fullInv: any = i;
+                    const d = detailMap.get(i.Number as number);
+                    if (d && typeof d === 'object') fullInv = { ...i, ...d };
+                    let updateInv = { ...fullInv, IssuedDate: fullInv.IssuedDate ? new Date(fullInv.IssuedDate) : undefined, DueDate: fullInv.DueDate ? new Date(fullInv.DueDate) : undefined, LastPaymentDate: fullInv.LastPaymentDate ? new Date(fullInv.LastPaymentDate) : fullInv.LastPaymentDate, PaidDate: fullInv.PaidDate ? new Date(fullInv.PaidDate) : fullInv.PaidDate, updatedAt: new Date(), lastSeenRun: runIdInv } as any;
                     updateInv = mergeNestedObjects(existingInv, updateInv, ['Currency', 'DeliveryAddress', 'Address']);
                     if (existingInv?.uuid) updateInv.uuid = (existingInv as any).uuid; else updateInv.uuid = `invoice:${i.Number}`; // match $setOnInsert for diff visibility
                     const { changedFields: changedFieldsInv, changes: changesInv } = diffDocs(existingInv, updateInv);
@@ -354,7 +463,8 @@ export async function runSync() {
                     } catch (e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write invoice upsert log'); }
                 }
                 if (reachedOldInv) { stoppedReasonInv = 'reachedOld'; break; }
-                if (items.length < perpageInv) { stoppedReasonInv = 'partialPage'; break; }
+                if (!res.nextPageUrl && items.length < perpageInv) { stoppedReasonInv = 'partialPage'; break; }
+                if (res.nextPageUrl) { nextUrlInv = res.nextPageUrl; await sleep(100 + Math.floor(Math.random() * 200)); }
                 pageInv += 1;
             }
             if (newMaxInv > lastMaxInv) await setState('invoices:lastMaxNumber', newMaxInv);
@@ -368,7 +478,7 @@ export async function runSync() {
                 softDeletedInv = (rInvSD && (rInvSD.modifiedCount ?? 0)) as number;
             }
             const invMs = Date.now() - invStart;
-            logger.info({ pages: pagesInv, fetched: fetchedInv, upserted: upsertedInv, total: totalInv, lastMax: lastMaxInv, newMax: newMaxInv, reachedOld: reachedOldInv, stoppedReason: stoppedReasonInv, softDeleted: softDeletedInv, fullRefresh: doFullRefreshIncrementals, ms: invMs }, 'Invoices sync completed (incremental)');
+            logger.info({ pages: pagesInv, fetched: fetchedInv, upserted: upsertedInv, total: totalInv, lastMax: lastMaxInv, newMax: newMaxInv, reachedOld: reachedOldInv, stoppedReason: stoppedReasonInv, softDeleted: softDeletedInv, fullRefresh: doFullRefreshIncrementals, detailOk: detailOkInv, detailFail: detailFailInv, ms: invMs }, 'Invoices sync completed (incremental)');
             entities.push({ entity: 'invoices', pages: pagesInv, fetched: fetchedInv, upserted: upsertedInv, total: totalInv, lastMax: lastMaxInv, newMax: newMaxInv, reachedOld: reachedOldInv, softDeleted: softDeletedInv, stoppedReason: stoppedReasonInv, fullRefresh: doFullRefreshIncrementals, ms: invMs });
 
             // === Quotes Sync ===
@@ -382,6 +492,7 @@ export async function runSync() {
                 if (lastMaxQ) await setState('quotes:lastMaxNumber', lastMaxQ);
             }
             let pageQ = 1;
+            let nextUrlQ: string | undefined = undefined;
             const perpageQ = 100;
             let fetchedQ = 0;
             let totalQ = 0;
@@ -390,17 +501,34 @@ export async function runSync() {
             let upsertedQ = 0;
             let pagesQ = 0;
             let stoppedReasonQ: string | undefined;
+            let detailOkQ = 0;
+            let detailFailQ = 0;
             while (true) {
-                const res = await fetchQuotes(pageQ, perpageQ, { order: 'Desc' });
+                const res = await fetchQuotes(pageQ, perpageQ, { order: 'Desc' }, nextUrlQ);
                 const items = res.items || [];
                 pagesQ += 1;
                 fetchedQ += items.length;
                 totalQ = res.total || totalQ;
+                // Prefetch quote details for new items
+                const newQuotes = items.filter(q => doFullRefreshIncrementals || (q.Number && q.Number > lastMaxQ));
+                const qDetails = await mapLimit(newQuotes, 8, async (it) => {
+                    try {
+                        if (typeof it.Number === 'number') {
+                            const detail = await fetchQuoteDetailByNumber(it.Number);
+                            if (detail && typeof detail === 'object') { detailOkQ += 1; return { key: it.Number, detail }; }
+                        }
+                    } catch { detailFailQ += 1; }
+                    return { key: it.Number, detail: null as any };
+                });
+                const qDetailMap = new Map<number, any>(qDetails.map(d => [d.key, d.detail]));
                 for (const q of items) {
                     if (q.Number && q.Number > newMaxQ) newMaxQ = q.Number;
                     if (!doFullRefreshIncrementals && q.Number && q.Number <= lastMaxQ) { reachedOldQ = true; continue; }
                     const existingQ = await QuoteModel.findOne({ Number: q.Number }).lean();
-                    let updateQ = { ...q, Date: q.Date ? new Date(q.Date) : undefined, updatedAt: new Date(), lastSeenRun: runIdQ } as any;
+                    let fullQ: any = q;
+                    const dq = qDetailMap.get(q.Number as number);
+                    if (dq && typeof dq === 'object') fullQ = { ...q, ...dq };
+                    let updateQ = { ...fullQ, Date: fullQ.Date ? new Date(fullQ.Date) : undefined, updatedAt: new Date(), lastSeenRun: runIdQ } as any;
                     updateQ = mergeNestedObjects(existingQ, updateQ, ['Currency', 'DeliveryAddress', 'Address']);
                     if (existingQ?.uuid) updateQ.uuid = (existingQ as any).uuid;
                     const { changedFields: changedFieldsQ, changes: changesQ } = diffDocs(existingQ, updateQ);
@@ -416,7 +544,8 @@ export async function runSync() {
                     } catch (e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write quote upsert log'); }
                 }
                 if (reachedOldQ) { stoppedReasonQ = 'reachedOld'; break; }
-                if (items.length < perpageQ) { stoppedReasonQ = 'partialPage'; break; }
+                if (!res.nextPageUrl && items.length < perpageQ) { stoppedReasonQ = 'partialPage'; break; }
+                if (res.nextPageUrl) { nextUrlQ = res.nextPageUrl; await sleep(100 + Math.floor(Math.random() * 200)); }
                 pageQ += 1;
             }
             if (newMaxQ > lastMaxQ) await setState('quotes:lastMaxNumber', newMaxQ);
@@ -430,7 +559,7 @@ export async function runSync() {
                 softDeletedQ = (rQSD && (rQSD.modifiedCount ?? 0)) as number;
             }
             const qMs = Date.now() - qStart;
-            logger.info({ pages: pagesQ, fetched: fetchedQ, upserted: upsertedQ, total: totalQ, lastMax: lastMaxQ, newMax: newMaxQ, reachedOld: reachedOldQ, stoppedReason: stoppedReasonQ, softDeleted: softDeletedQ, fullRefresh: doFullRefreshIncrementals, ms: qMs }, 'Quotes sync completed (incremental)');
+            logger.info({ pages: pagesQ, fetched: fetchedQ, upserted: upsertedQ, total: totalQ, lastMax: lastMaxQ, newMax: newMaxQ, reachedOld: reachedOldQ, stoppedReason: stoppedReasonQ, softDeleted: softDeletedQ, fullRefresh: doFullRefreshIncrementals, detailOk: detailOkQ, detailFail: detailFailQ, ms: qMs }, 'Quotes sync completed (incremental)');
             entities.push({ entity: 'quotes', pages: pagesQ, fetched: fetchedQ, upserted: upsertedQ, total: totalQ, lastMax: lastMaxQ, newMax: newMaxQ, reachedOld: reachedOldQ, softDeleted: softDeletedQ, stoppedReason: stoppedReasonQ, fullRefresh: doFullRefreshIncrementals, ms: qMs });
 
             // === Projects Sync ===
@@ -444,6 +573,7 @@ export async function runSync() {
                 if (lastMaxPj) await setState('projects:lastMaxNumber', lastMaxPj);
             }
             let pagePj = 1;
+            let nextUrlPj: string | undefined = undefined;
             const perpagePj = 100;
             let fetchedPj = 0;
             let totalPj = 0;
@@ -453,17 +583,34 @@ export async function runSync() {
             let pagesPj = 0;
             let stoppedReasonPj: string | undefined;
             let unpagedPj = false;
+            let detailOkPj = 0;
+            let detailFailPj = 0;
             while (true) {
-                const res = await fetchProjects(pagePj, perpagePj, { order: 'Desc' });
+                const res = await fetchProjects(pagePj, perpagePj, { order: 'Desc' }, nextUrlPj);
                 const items = res.items || [];
                 pagesPj += 1;
                 fetchedPj += items.length;
                 totalPj = res.total || totalPj;
+                // Prefetch project details for new items
+                const newPj = items.filter(pj => doFullRefreshIncrementals || (pj.Number && pj.Number > lastMaxPj));
+                const pjDetails = await mapLimit(newPj, 8, async (it) => {
+                    try {
+                        if (typeof it.Number === 'number') {
+                            const detail = await fetchProjectDetailByNumber(it.Number);
+                            if (detail && typeof detail === 'object') { detailOkPj += 1; return { key: it.Number, detail }; }
+                        }
+                    } catch { detailFailPj += 1; }
+                    return { key: it.Number, detail: null as any };
+                });
+                const pjDetailMap = new Map<number, any>(pjDetails.map(d => [d.key, d.detail]));
                 for (const pj of items) {
                     if (pj.Number && pj.Number > newMaxPj) newMaxPj = pj.Number;
                     if (!doFullRefreshIncrementals && pj.Number && pj.Number <= lastMaxPj) { reachedOldPj = true; continue; }
                     const existingPj = await ProjectModel.findOne({ Number: pj.Number }).lean();
-                    let updatePj = { ...pj, StartDate: pj.StartDate ? new Date(pj.StartDate) : undefined, EndDate: pj.EndDate ? new Date(pj.EndDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdPj } as any;
+                    let fullPj: any = pj;
+                    const dpj = pjDetailMap.get(pj.Number as number);
+                    if (dpj && typeof dpj === 'object') fullPj = { ...pj, ...dpj };
+                    let updatePj = { ...fullPj, StartDate: fullPj.StartDate ? new Date(fullPj.StartDate) : undefined, EndDate: fullPj.EndDate ? new Date(fullPj.EndDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdPj } as any;
                     updatePj = mergeNestedObjects(existingPj, updatePj, ['Address']);
                     if (existingPj?.uuid) updatePj.uuid = (existingPj as any).uuid;
                     const { changedFields: changedFieldsPj, changes: changesPj } = diffDocs(existingPj, updatePj);
@@ -485,7 +632,8 @@ export async function runSync() {
                 // - Or we've fetched all items according to total.
                 if (reachedOldPj) { stoppedReasonPj = 'reachedOld'; break; }
                 if ((res as any).isUnpaged) { unpagedPj = true; stoppedReasonPj = 'unpaged'; break; }
-                if (items.length < perpagePj) { stoppedReasonPj = 'partialPage'; break; }
+                if (items.length < perpagePj && !res.nextPageUrl) { stoppedReasonPj = 'partialPage'; break; }
+                if (res.nextPageUrl) { nextUrlPj = res.nextPageUrl; await sleep(100 + Math.floor(Math.random() * 200)); }
                 if (fetchedPj >= totalPj) { stoppedReasonPj = 'exhaustedTotal'; break; }
                 pagePj += 1;
             }
@@ -500,7 +648,7 @@ export async function runSync() {
                 softDeletedPj = (rPjSD && (rPjSD.modifiedCount ?? 0)) as number;
             }
             const pjMs = Date.now() - pjStart;
-            logger.info({ pages: pagesPj, fetched: fetchedPj, upserted: upsertedPj, total: totalPj, lastMax: lastMaxPj, newMax: newMaxPj, reachedOld: reachedOldPj, stoppedReason: stoppedReasonPj, unpaged: unpagedPj, softDeleted: softDeletedPj, fullRefresh: doFullRefreshIncrementals, ms: pjMs }, 'Projects sync completed (incremental)');
+            logger.info({ pages: pagesPj, fetched: fetchedPj, upserted: upsertedPj, total: totalPj, lastMax: lastMaxPj, newMax: newMaxPj, reachedOld: reachedOldPj, stoppedReason: stoppedReasonPj, unpaged: unpagedPj, softDeleted: softDeletedPj, fullRefresh: doFullRefreshIncrementals, detailOk: detailOkPj, detailFail: detailFailPj, ms: pjMs }, 'Projects sync completed (incremental)');
             entities.push({ entity: 'projects', pages: pagesPj, fetched: fetchedPj, upserted: upsertedPj, total: totalPj, lastMax: lastMaxPj, newMax: newMaxPj, reachedOld: reachedOldPj, stoppedReason: stoppedReasonPj, unpaged: unpagedPj, softDeleted: softDeletedPj, fullRefresh: doFullRefreshIncrementals, ms: pjMs });
             
             // === Purchases Sync (LAST) ===

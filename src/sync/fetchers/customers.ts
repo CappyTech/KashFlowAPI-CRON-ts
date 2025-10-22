@@ -10,9 +10,11 @@ export interface Customer {
 
 export interface Paged<T> { items: T[]; page: number; perpage: number; total: number; nextPageUrl?: string }
 
-export async function fetchCustomers(page = 1, perpage = 100) {
+export async function fetchCustomers(page = 1, perpage = 100, nextUrl?: string) {
     // KashFlow supports page/perpage; allowed sortby: Code, Name, TotalPaidAmount, OutstandingBalance
-    const raw = await getWithRetry<any>('/customers', { page, perpage, sortby: 'Code', order: 'Asc' });
+    const raw = nextUrl
+        ? await getWithRetry<any>(nextUrl)
+        : await getWithRetry<any>('/customers', { page, perpage, sortby: 'Code', order: 'Asc' });
     if (page === 1) {
         const keys = raw && typeof raw === 'object' ? Object.keys(raw) : [];
         logger.info({ keys, rawType: Array.isArray(raw) ? 'array' : typeof raw }, 'Customers raw response shape');
@@ -30,4 +32,10 @@ export async function fetchCustomers(page = 1, perpage = 100) {
     };
     logger.info({ page: meta.page, perpage: meta.perpage, total: meta.total, count: items.length }, 'Fetched customers page');
     return { items: items as Customer[], ...meta, nextPageUrl: nextPageUrl ?? undefined } as Paged<Customer>;
+}
+
+// Single: GET /customers/{code} → full customer details
+export async function fetchCustomerDetailByCode(code: string) {
+    const raw = await getWithRetry<any>(`/customers/${encodeURIComponent(code)}`);
+    return raw;
 }
