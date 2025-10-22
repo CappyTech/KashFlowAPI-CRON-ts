@@ -411,7 +411,8 @@ export async function runSync() {
                 if (lastMaxInv) await setState('invoices:lastMaxNumber', lastMaxInv);
             }
             let pageInv = 1;
-            let nextUrlInv: string | undefined = undefined;
+            let nextUrlInv: string | undefined = (await getState<string>('invoices:lastPageUrl')) || undefined;
+            const resumeAfterInv = (await getState<number>('invoices:lastProcessedNumber')) || 0;
             const perpageInv = 50; // reduce to lower payload size and mitigate timeouts
             let fetchedInv = 0;
             let totalInv = 0;
@@ -428,8 +429,17 @@ export async function runSync() {
                 pagesInv += 1;
                 fetchedInv += items.length;
                 totalInv = res.total || totalInv;
+                // Determine items to process, honoring resume pointer on first resumed page
+                let skipPastInv = !!nextUrlInv && !!resumeAfterInv;
+                const processInv = [] as typeof items;
+                for (const it of items) {
+                    if (skipPastInv) {
+                        if (it.Number === resumeAfterInv) { skipPastInv = false; continue; } else { continue; }
+                    }
+                    processInv.push(it);
+                }
                 // Prefetch details for new items with bounded concurrency
-                const newItems = items.filter(i => doFullRefreshIncrementals || (i.Number && i.Number > lastMaxInv));
+                const newItems = processInv.filter(i => doFullRefreshIncrementals || (i.Number && i.Number > lastMaxInv));
                 const details = await mapLimit(newItems, 8, async (it) => {
                     try {
                         if (typeof it.Number === 'number') {
@@ -440,7 +450,7 @@ export async function runSync() {
                     return { key: it.Number, detail: null as any };
                 });
                 const detailMap = new Map<number, any>(details.map(d => [d.key, d.detail]));
-                for (const i of items) {
+                for (const i of processInv) {
                     if (i.Number && i.Number > newMaxInv) newMaxInv = i.Number;
                     if (!doFullRefreshIncrementals && i.Number && i.Number <= lastMaxInv) { reachedOldInv = true; continue; }
                     const existingInv = await InvoiceModel.findOne({ Number: i.Number }).lean();
@@ -462,9 +472,11 @@ export async function runSync() {
                         const wasInserted = rInv.upsertedCount === 1 || !!rInv.upsertedId; if (wasInserted || changedFieldsInv.length > 0) { await UpsertLogModel.create({ entity: 'invoices', key: String(i.Number), op: wasInserted ? 'insert' : 'update', runId: runIdInv, modifiedCount: (rInv as any).modifiedCount, upsertedId: (rInv as any).upsertedId, changedFields: changedFieldsInv, changes: changesInv }); }
                     } catch (e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write invoice upsert log'); }
                 }
-                if (reachedOldInv) { stoppedReasonInv = 'reachedOld'; break; }
-                if (!res.nextPageUrl && items.length < perpageInv) { stoppedReasonInv = 'partialPage'; break; }
-                if (res.nextPageUrl) { nextUrlInv = res.nextPageUrl; await sleep(100 + Math.floor(Math.random() * 200)); }
+                // Persist resume pointers for this page
+                try { if (items.length) await setState('invoices:lastProcessedNumber', items[items.length - 1].Number as number); } catch {}
+                if (reachedOldInv) { stoppedReasonInv = 'reachedOld'; await setState('invoices:lastPageUrl',''); await setState('invoices:lastProcessedNumber', 0 as any); break; }
+                if (!res.nextPageUrl && items.length < perpageInv) { stoppedReasonInv = 'partialPage'; await setState('invoices:lastPageUrl',''); await setState('invoices:lastProcessedNumber', 0 as any); break; }
+                if (res.nextPageUrl) { nextUrlInv = res.nextPageUrl; await setState('invoices:lastPageUrl', nextUrlInv); await sleep(100 + Math.floor(Math.random() * 200)); }
                 pageInv += 1;
             }
             if (newMaxInv > lastMaxInv) await setState('invoices:lastMaxNumber', newMaxInv);
@@ -492,7 +504,8 @@ export async function runSync() {
                 if (lastMaxQ) await setState('quotes:lastMaxNumber', lastMaxQ);
             }
             let pageQ = 1;
-            let nextUrlQ: string | undefined = undefined;
+            let nextUrlQ: string | undefined = (await getState<string>('quotes:lastPageUrl')) || undefined;
+            const resumeAfterQ = (await getState<number>('quotes:lastProcessedNumber')) || 0;
             const perpageQ = 100;
             let fetchedQ = 0;
             let totalQ = 0;
@@ -509,8 +522,17 @@ export async function runSync() {
                 pagesQ += 1;
                 fetchedQ += items.length;
                 totalQ = res.total || totalQ;
+                // Determine items to process honoring resume pointer
+                let skipPastQ = !!nextUrlQ && !!resumeAfterQ;
+                const processQ = [] as typeof items;
+                for (const it of items) {
+                    if (skipPastQ) {
+                        if (it.Number === resumeAfterQ) { skipPastQ = false; continue; } else { continue; }
+                    }
+                    processQ.push(it);
+                }
                 // Prefetch quote details for new items
-                const newQuotes = items.filter(q => doFullRefreshIncrementals || (q.Number && q.Number > lastMaxQ));
+                const newQuotes = processQ.filter(q => doFullRefreshIncrementals || (q.Number && q.Number > lastMaxQ));
                 const qDetails = await mapLimit(newQuotes, 8, async (it) => {
                     try {
                         if (typeof it.Number === 'number') {
@@ -521,7 +543,7 @@ export async function runSync() {
                     return { key: it.Number, detail: null as any };
                 });
                 const qDetailMap = new Map<number, any>(qDetails.map(d => [d.key, d.detail]));
-                for (const q of items) {
+                for (const q of processQ) {
                     if (q.Number && q.Number > newMaxQ) newMaxQ = q.Number;
                     if (!doFullRefreshIncrementals && q.Number && q.Number <= lastMaxQ) { reachedOldQ = true; continue; }
                     const existingQ = await QuoteModel.findOne({ Number: q.Number }).lean();
@@ -543,9 +565,11 @@ export async function runSync() {
                         const wasInserted = rQ.upsertedCount === 1 || !!rQ.upsertedId; if (wasInserted || changedFieldsQ.length > 0) { await UpsertLogModel.create({ entity: 'quotes', key: String(q.Number), op: wasInserted ? 'insert' : 'update', runId: runIdQ, modifiedCount: (rQ as any).modifiedCount, upsertedId: (rQ as any).upsertedId, changedFields: changedFieldsQ, changes: changesQ }); }
                     } catch (e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write quote upsert log'); }
                 }
-                if (reachedOldQ) { stoppedReasonQ = 'reachedOld'; break; }
-                if (!res.nextPageUrl && items.length < perpageQ) { stoppedReasonQ = 'partialPage'; break; }
-                if (res.nextPageUrl) { nextUrlQ = res.nextPageUrl; await sleep(100 + Math.floor(Math.random() * 200)); }
+                // Persist resume pointers
+                try { if (items.length) await setState('quotes:lastProcessedNumber', items[items.length - 1].Number as number); } catch {}
+                if (reachedOldQ) { stoppedReasonQ = 'reachedOld'; await setState('quotes:lastPageUrl',''); await setState('quotes:lastProcessedNumber', 0 as any); break; }
+                if (!res.nextPageUrl && items.length < perpageQ) { stoppedReasonQ = 'partialPage'; await setState('quotes:lastPageUrl',''); await setState('quotes:lastProcessedNumber', 0 as any); break; }
+                if (res.nextPageUrl) { nextUrlQ = res.nextPageUrl; await setState('quotes:lastPageUrl', nextUrlQ); await sleep(100 + Math.floor(Math.random() * 200)); }
                 pageQ += 1;
             }
             if (newMaxQ > lastMaxQ) await setState('quotes:lastMaxNumber', newMaxQ);
@@ -663,6 +687,8 @@ export async function runSync() {
                 if (lastMaxPur) await setState('purchases:lastMaxNumber', lastMaxPur);
             }
             let pagePur = 1;
+            let nextUrlPur: string | undefined = (await getState<string>('purchases:lastPageUrl')) || undefined;
+            const resumeAfterPur = (await getState<number>('purchases:lastProcessedNumber')) || 0;
             const perpagePur = 100;
             let fetchedPur = 0;
             let totalPur = 0;
@@ -672,12 +698,21 @@ export async function runSync() {
             let pagesPur = 0;
             let stoppedReasonPur: string | undefined;
             while (true) {
-                const res = await fetchPurchases(pagePur, perpagePur, { order: 'Desc' });
+                const res = await fetchPurchases(pagePur, perpagePur, { order: 'Desc' }, nextUrlPur);
                 const items = res.items || [];
                 pagesPur += 1;
                 fetchedPur += items.length;
                 totalPur = res.total || totalPur;
-                for (const p of items) {
+                // Determine items to process honoring resume pointer
+                let skipPastPur = !!nextUrlPur && !!resumeAfterPur;
+                const processPur = [] as typeof items;
+                for (const it of items) {
+                    if (skipPastPur) {
+                        if (it.Number === resumeAfterPur) { skipPastPur = false; continue; } else { continue; }
+                    }
+                    processPur.push(it);
+                }
+                for (const p of processPur) {
                     if (p.Number && p.Number > newMaxPur) newMaxPur = p.Number;
                     if (!doFullRefreshIncrementals && p.Number && p.Number <= lastMaxPur) { reachedOldPur = true; continue; }
                     const existingPur = await PurchaseModel.findOne({ Number: p.Number }).lean();
@@ -775,8 +810,11 @@ export async function runSync() {
                     upsertedPur += 1;
                     try { if (wasInserted || changedFieldsPur.length > 0) { await UpsertLogModel.create({ entity: 'purchases', key: String(p.Number), op: wasInserted ? 'insert' : 'update', runId: runIdPur, modifiedCount: (res as any).modifiedCount, upsertedId: (res as any).upsertedId, changedFields: changedFieldsPur, changes: changesPur }); } } catch (e) { if (config.flags.upsertLogs) logger.debug({ err: e }, 'Failed to write purchase upsert log'); }
                 }
-                if (reachedOldPur) { stoppedReasonPur = 'reachedOld'; break; }
-                if (items.length < perpagePur) { stoppedReasonPur = 'partialPage'; break; }
+                // Persist resume pointers
+                try { if (items.length) await setState('purchases:lastProcessedNumber', items[items.length - 1].Number as number); } catch {}
+                if (reachedOldPur) { stoppedReasonPur = 'reachedOld'; await setState('purchases:lastPageUrl',''); await setState('purchases:lastProcessedNumber', 0 as any); break; }
+                if (!res.nextPageUrl && items.length < perpagePur) { stoppedReasonPur = 'partialPage'; await setState('purchases:lastPageUrl',''); await setState('purchases:lastProcessedNumber', 0 as any); break; }
+                if (res.nextPageUrl) { nextUrlPur = res.nextPageUrl; await setState('purchases:lastPageUrl', nextUrlPur); await sleep(100 + Math.floor(Math.random() * 200)); }
                 pagePur += 1;
             }
             if (newMaxPur > lastMaxPur) await setState('purchases:lastMaxNumber', newMaxPur);
