@@ -1,6 +1,6 @@
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { getLastSummary, setNextCron, setNextFullRefresh } from '../../sync/summary.js';
-import { getState } from '../../sync/state.js';
+import { getState, setState } from '../../sync/state.js';
 import { SyncSummaryModel, UpsertLogModel } from '../../db/models.js';
 import { config } from '../../config.js';
 import logger from '../../util/logger.js';
@@ -42,6 +42,14 @@ export async function handleTriggerSync(req: IncomingMessage, res: ServerRespons
   if (req.method !== 'POST' && req.method !== 'GET') { res.statusCode = 405; return res.end('Method Not Allowed'); }
   const { inProgress } = getLastSummary();
   if (inProgress) { res.statusCode = 409; return res.end('Sync already in progress'); }
+  // Optional full refresh force flag via query string: /trigger-sync?full=1
+  try {
+    const u = new URL(req.url || '/', 'http://x');
+    const full = (u.searchParams.get('full') || '').toLowerCase();
+    if (full && ['1','true','yes','on'].includes(full)) {
+      await setState('incremental:forceFullNextRun', true);
+    }
+  } catch {}
   runSync().catch(err => logger.error({ err }, 'Manual sync failed'));
   res.statusCode = 202; return res.end('Sync triggered');
 }

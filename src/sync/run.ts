@@ -95,7 +95,8 @@ export async function runSync() {
             const fullRefreshHours = config.flags.fullRefreshHours || 24;
             const fullRefreshMs = fullRefreshHours * 3600_000;
             const lastFullRefreshTs = (await getState<number>('incremental:lastFullRefreshTs')) || 0;
-            const doFullRefreshIncrementals = (now - lastFullRefreshTs) >= fullRefreshMs;
+            const forceFullNextRun = (await getState<boolean>('incremental:forceFullNextRun')) || false;
+            const doFullRefreshIncrementals = forceFullNextRun || ((now - lastFullRefreshTs) >= fullRefreshMs);
             if (doFullRefreshIncrementals) {
                 logger.info({ fullRefreshHours }, 'Performing scheduled full refresh for incremental entities');
             }
@@ -256,7 +257,6 @@ export async function runSync() {
                         logger.debug({ entity: 'suppliers', code: s.Code, wasInserted, modifiedCount: (res as any).modifiedCount }, 'Supplier upsert');
                     }
                 }
-                const isPartial = items.length < perpageSup;
                 const exhaustedTotal = fetchedSup >= totalSup && totalSup > 0;
                 if (items.length === 0 && pageSup > 1) {
                     // Went past the last page; if we haven't looped and didn't start at page 1, wrap to beginning.
@@ -271,24 +271,14 @@ export async function runSync() {
                 }
                 // Persist progress for observability (so restarts don’t repeat too much)
                 await setState('suppliers:lastPage', pageSup);
-                if (res.nextPageUrl) {
-                    pageSup += 1;
-                } else {
-                    // Last page reached; if started mid-list and not yet looped, wrap to page 1 and continue up to initial page - 1
-                    if (!loopedSup && initialPageSup > 1 && !(isPartial || exhaustedTotal)) {
-                        loopedSup = true;
-                        pageSup = 1;
-                        continue;
-                    }
+                if (exhaustedTotal) {
                     completedFullSup = true;
                     await setState('suppliers:lastPage', 0);
                     break;
                 }
-                if (isPartial || exhaustedTotal) {
-                    completedFullSup = true;
-                    await setState('suppliers:lastPage', 0);
-                    break;
-                }
+                // No strong nextPageUrl from API? Continue by incrementing page numerically.
+                // If we eventually hit an empty page, the earlier check will wrap/finish accordingly.
+                pageSup += 1;
                 if (loopedSup && pageSup >= initialPageSup) {
                     // We’ve completed wrap-around up to the starting page; finish
                     completedFullSup = true;
@@ -660,6 +650,10 @@ export async function runSync() {
             // Update last full refresh timestamp if needed
             if (doFullRefreshIncrementals) {
                 await setState('incremental:lastFullRefreshTs', now);
+                if (forceFullNextRun) {
+                    // clear the one-shot flag
+                    await setState('incremental:forceFullNextRun', false);
+                }
             }
 
         } catch (err) {
