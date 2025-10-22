@@ -173,7 +173,7 @@ export async function runSync() {
                         const parsedIncomingLU = c.LastUpdatedDate ? new Date(c.LastUpdatedDate) : undefined;
                         const existingLU = existing && (existing as any).LastUpdatedDate instanceof Date ? (existing as any).LastUpdatedDate as unknown as Date : undefined;
                         const lastUpdatedChanged = !!(parsedIncomingLU && existingLU && existingLU.getTime() !== parsedIncomingLU.getTime());
-                        if ((!incomingHasWanted && existingMissingWanted) || lastUpdatedChanged) {
+                        if (existingMissingWanted || lastUpdatedChanged) {
                             if (c.Code) {
                                 const detail = await fetchCustomerDetailByCode(c.Code);
                                 if (detail && typeof detail === 'object') { fullC = { ...c, ...detail }; detailOkCust += 1; }
@@ -319,7 +319,7 @@ export async function runSync() {
                         const parsedIncomingLU = s.LastUpdatedDate ? new Date(s.LastUpdatedDate) : undefined;
                         const existingLU = existingSup && (existingSup as any).LastUpdatedDate instanceof Date ? (existingSup as any).LastUpdatedDate as unknown as Date : undefined;
                         const lastUpdatedChanged = !!(parsedIncomingLU && existingLU && existingLU.getTime() !== parsedIncomingLU.getTime());
-                        if ((!incomingHasWanted && existingMissingWanted) || lastUpdatedChanged) {
+                        if (existingMissingWanted || lastUpdatedChanged) {
                             let detail: any = null;
                             if (s.Code) {
                                 try { detail = await fetchSupplierDetailByCode(s.Code); } catch {/* ignore single supplier detail failures */}
@@ -476,6 +476,25 @@ export async function runSync() {
                     let fullInv: any = i;
                     const d = detailMap.get(i.Number as number);
                     if (d && typeof d === 'object') fullInv = { ...i, ...d };
+                    else {
+                        // Dynamic schema-driven enrichment for invoices if any schema field is missing
+                        try {
+                            const wanted = (() => {
+                                try {
+                                    const schemaPaths = Object.keys((InvoiceModel as any).schema?.paths ?? {});
+                                    const skip = new Set<string>(['_id','__v','uuid','createdAt','updatedAt','deletedAt','lastSeenRun']);
+                                    return schemaPaths.filter(k => !skip.has(k));
+                                } catch { return [] as string[]; }
+                            })();
+                            const existingMissing = wanted.some(k => !existingInv || (existingInv as any)[k] === undefined);
+                            if (existingMissing && typeof i.Number === 'number') {
+                                try {
+                                    const onDemand = await fetchInvoiceDetailByNumber(i.Number);
+                                    if (onDemand && typeof onDemand === 'object') { fullInv = { ...i, ...onDemand }; detailOkInv += 1; }
+                                } catch { detailFailInv += 1; }
+                            }
+                        } catch {/* ignore */}
+                    }
                     let updateInv = { ...fullInv, IssuedDate: fullInv.IssuedDate ? new Date(fullInv.IssuedDate) : undefined, DueDate: fullInv.DueDate ? new Date(fullInv.DueDate) : undefined, LastPaymentDate: fullInv.LastPaymentDate ? new Date(fullInv.LastPaymentDate) : fullInv.LastPaymentDate, PaidDate: fullInv.PaidDate ? new Date(fullInv.PaidDate) : fullInv.PaidDate, updatedAt: new Date(), lastSeenRun: runIdInv } as any;
                     updateInv = mergeNestedObjects(existingInv, updateInv, ['Currency', 'DeliveryAddress', 'Address']);
                     if (existingInv?.uuid) updateInv.uuid = (existingInv as any).uuid; else updateInv.uuid = `invoice:${i.Number}`; // match $setOnInsert for diff visibility
@@ -569,6 +588,25 @@ export async function runSync() {
                     let fullQ: any = q;
                     const dq = qDetailMap.get(q.Number as number);
                     if (dq && typeof dq === 'object') fullQ = { ...q, ...dq };
+                    else {
+                        // Dynamic schema-driven enrichment for quotes if any schema field is missing
+                        try {
+                            const wanted = (() => {
+                                try {
+                                    const schemaPaths = Object.keys((QuoteModel as any).schema?.paths ?? {});
+                                    const skip = new Set<string>(['_id','__v','uuid','createdAt','updatedAt','deletedAt','lastSeenRun']);
+                                    return schemaPaths.filter(k => !skip.has(k));
+                                } catch { return [] as string[]; }
+                            })();
+                            const existingMissing = wanted.some(k => !existingQ || (existingQ as any)[k] === undefined);
+                            if (existingMissing && typeof q.Number === 'number') {
+                                try {
+                                    const onDemand = await fetchQuoteDetailByNumber(q.Number);
+                                    if (onDemand && typeof onDemand === 'object') { fullQ = { ...q, ...onDemand }; detailOkQ += 1; }
+                                } catch { detailFailQ += 1; }
+                            }
+                        } catch {/* ignore */}
+                    }
                     let updateQ = { ...fullQ, Date: fullQ.Date ? new Date(fullQ.Date) : undefined, updatedAt: new Date(), lastSeenRun: runIdQ } as any;
                     updateQ = mergeNestedObjects(existingQ, updateQ, ['Currency', 'DeliveryAddress', 'Address']);
                     if (existingQ?.uuid) updateQ.uuid = (existingQ as any).uuid;
@@ -653,6 +691,25 @@ export async function runSync() {
                     let fullPj: any = pj;
                     const dpj = pjDetailMap.get(pj.Number as number);
                     if (dpj && typeof dpj === 'object') fullPj = { ...pj, ...dpj };
+                    else {
+                        // Dynamic schema-driven enrichment for projects if any schema field is missing
+                        try {
+                            const wanted = (() => {
+                                try {
+                                    const schemaPaths = Object.keys((ProjectModel as any).schema?.paths ?? {});
+                                    const skip = new Set<string>(['_id','__v','uuid','createdAt','updatedAt','deletedAt','lastSeenRun']);
+                                    return schemaPaths.filter(k => !skip.has(k));
+                                } catch { return [] as string[]; }
+                            })();
+                            const existingMissing = wanted.some(k => !existingPj || (existingPj as any)[k] === undefined);
+                            if (existingMissing && typeof pj.Number === 'number') {
+                                try {
+                                    const onDemand = await fetchProjectDetailByNumber(pj.Number);
+                                    if (onDemand && typeof onDemand === 'object') { fullPj = { ...pj, ...onDemand }; detailOkPj += 1; }
+                                } catch { detailFailPj += 1; }
+                            }
+                        } catch {/* ignore */}
+                    }
                     let updatePj = { ...fullPj, StartDate: fullPj.StartDate ? new Date(fullPj.StartDate) : undefined, EndDate: fullPj.EndDate ? new Date(fullPj.EndDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdPj } as any;
                     updatePj = mergeNestedObjects(existingPj, updatePj, ['Address']);
                     if (existingPj?.uuid) updatePj.uuid = (existingPj as any).uuid;
@@ -731,47 +788,46 @@ export async function runSync() {
                     }
                     processPur.push(it);
                 }
+                // Build a map of existing docs and determine which items need detail, then fetch details concurrently
+                const existingMapPur = new Map<number, any>();
+                const wantedPur = (() => {
+                    try { const schemaPaths = Object.keys((PurchaseModel as any).schema?.paths ?? {}); const skip = new Set<string>(['_id','__v','uuid','createdAt','updatedAt','deletedAt','lastSeenRun']); return schemaPaths.filter(k => !skip.has(k)); } catch { return [] as string[]; }
+                })();
+                const targetsPur: typeof processPur = [] as any;
                 for (const p of processPur) {
                     if (p.Number && p.Number > newMaxPur) newMaxPur = p.Number;
                     if (!doFullRefreshIncrementals && p.Number && p.Number <= lastMaxPur) { reachedOldPur = true; continue; }
                     const existingPur = await PurchaseModel.findOne({ Number: p.Number }).lean();
-                    // Ensure we have complete info: fetch detail if missing any schema field (excluding operational),
-                    // or if LineItems are missing but we have a Permalink/Number/Id to fetch from.
-                    let fullP: any = p as any;
+                    existingMapPur.set(p.Number as number, existingPur);
                     const hasLineItemsAlready = Array.isArray((p as any).LineItems) && (p as any).LineItems.length > 0;
-                    let shouldFetchDetail = false;
-                    try {
-                        const wanted = (() => {
-                            try {
-                                const schemaPaths = Object.keys((PurchaseModel as any).schema?.paths ?? {});
-                                const skip = new Set<string>(['_id','__v','uuid','createdAt','updatedAt','deletedAt','lastSeenRun']);
-                                return schemaPaths.filter(k => !skip.has(k));
-                            } catch { return [] as string[]; }
-                        })();
-                        const existingMissing = wanted.some(k => !existingPur || (existingPur as any)[k] === undefined);
-                        shouldFetchDetail = existingMissing || !hasLineItemsAlready;
-                    } catch { /* ignore */ }
-                    if (shouldFetchDetail) {
-                        purchasesNeedingDetail += 1;
-                        const permalink = (p as any).Permalink;
-                        let detail: any = null;
-                        if (permalink) {
-                            try { detail = await fetchPurchaseDetailByPermalink(permalink); if (detail) detailFromPermalink += 1; } catch {/* ignore */}
-                        }
-                        if (!detail && (p as any).Number) {
-                            try { detail = await fetchPurchaseDetailByNumber((p as any).Number); if (detail) detailFromNumber += 1; } catch {/* ignore */}
-                        }
-                        if (!detail && (p as any).Id) {
-                            try { detail = await fetchPurchaseDetailById((p as any).Id); if (detail) detailFromId += 1; } catch {/* ignore */}
-                        }
-                        if (detail && typeof detail === 'object') {
-                            // Merge entire detail object to capture all fields, with special care to keep LineItems/PaymentLines
-                            const li = Array.isArray((detail as any).LineItems) && (detail as any).LineItems.length ? { LineItems: (detail as any).LineItems } : {};
-                            const pls = (detail as any).PaymentLines ? { PaymentLines: (detail as any).PaymentLines } : {};
-                            fullP = { ...p, ...detail, ...li, ...pls };
-                        } else if (!hasLineItemsAlready && config.flags.upsertLogs) {
-                            logger.debug({ number: p.Number, id: (p as any).Id }, 'Purchase detail enrichment failed or no LineItems returned');
-                        }
+                    const existingMissing = wantedPur.some(k => !existingPur || (existingPur as any)[k] === undefined);
+                    const shouldFetchDetail = existingMissing || !hasLineItemsAlready;
+                    if (shouldFetchDetail) { purchasesNeedingDetail += 1; targetsPur.push(p); }
+                }
+                const detailResultsPur = await mapLimit(targetsPur, 8, async (p) => {
+                    const permalink = (p as any).Permalink;
+                    let detail: any = null;
+                    if (permalink) {
+                        try { detail = await fetchPurchaseDetailByPermalink(permalink); if (detail) detailFromPermalink += 1; } catch {/* ignore */}
+                    }
+                    if (!detail && (p as any).Number) {
+                        try { detail = await fetchPurchaseDetailByNumber((p as any).Number); if (detail) detailFromNumber += 1; } catch {/* ignore */}
+                    }
+                    if (!detail && (p as any).Id) {
+                        try { detail = await fetchPurchaseDetailById((p as any).Id); if (detail) detailFromId += 1; } catch {/* ignore */}
+                    }
+                    return { key: p.Number as number, detail };
+                });
+                const detailMapPur = new Map<number, any>(detailResultsPur.map(d => [d.key, d.detail]));
+                for (const p of processPur) {
+                    if (!doFullRefreshIncrementals && p.Number && p.Number <= lastMaxPur) { continue; }
+                    const existingPur = existingMapPur.get(p.Number as number) ?? (await PurchaseModel.findOne({ Number: p.Number }).lean());
+                    let fullP: any = p as any;
+                    const detail = detailMapPur.get(p.Number as number);
+                    if (detail && typeof detail === 'object') {
+                        const li = Array.isArray((detail as any).LineItems) && (detail as any).LineItems.length ? { LineItems: (detail as any).LineItems } : {};
+                        const pls = (detail as any).PaymentLines ? { PaymentLines: (detail as any).PaymentLines } : {};
+                        fullP = { ...p, ...detail, ...li, ...pls };
                     }
                     if (Array.isArray(fullP.LineItems) && fullP.LineItems.length) purchasesWithLineItems += 1;
                     // Build purchase update document, deriving UK TaxYear / TaxMonth from PaidDate if present.
