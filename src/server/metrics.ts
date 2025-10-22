@@ -36,7 +36,14 @@ export function startMetricsServer() {
     // Log route access when response finishes
     res.on('finish', () => {
       try {
-        logger.info({ method: req.method, url: req.url, status: res.statusCode, ms: Date.now() - startedAt }, 'route');
+        // Determine client IP for logs (honor X-Forwarded-For when configured)
+        const rawRemote = req.socket.remoteAddress || '';
+        let clientIp = rawRemote;
+        if (config.metrics.trustProxy) {
+          const xff = String((req.headers['x-forwarded-for'] as string | undefined) || '').split(',')[0].trim();
+          if (xff) clientIp = xff;
+        }
+        logger.info({ method: req.method, url: req.url, status: res.statusCode, ms: Date.now() - startedAt, ip: clientIp, remote: rawRemote }, 'route');
       } catch { /* swallow logging errors */ }
     });
     // HTTP Basic Auth for all endpoints

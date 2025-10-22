@@ -10,7 +10,12 @@ import { runSync } from '../../sync/run.js';
 // Prometheus /metrics handler removed per request
 
 export async function handleTriggerSync(req: IncomingMessage, res: ServerResponse) {
-  const remote = req.socket.remoteAddress || '';
+  // Determine client IP, optionally honoring proxy headers
+  let remote = req.socket.remoteAddress || '';
+  if (config.metrics.trustProxy) {
+    const xff = String((req.headers['x-forwarded-for'] as string | undefined) || '').split(',')[0].trim();
+    if (xff) remote = xff;
+  }
   function isLocalOrLan(addr: string): boolean {
     if (!addr) return false;
     const a = addr.toLowerCase();

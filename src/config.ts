@@ -78,6 +78,7 @@ export const config = {
         authUser: process.env.METRICS_AUTH_USER,
     authPass: process.env.METRICS_AUTH_PASS,
     allowRemoteTrigger: bool(process.env.METRICS_ALLOW_REMOTE_TRIGGER, false),
+    trustProxy: bool(process.env.METRICS_TRUST_PROXY, false),
     },
 };
 // If any required variables were missing, throw one combined error now.
