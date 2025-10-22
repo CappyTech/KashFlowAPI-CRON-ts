@@ -40,7 +40,15 @@ export async function fetchProjects(page = 1, perpage = 100, params: Partial<Rec
 
 // Single: GET /project/{number} → full project details
 export async function fetchProjectDetailByNumber(number: number) {
-    // Note: endpoint is singular per docs
-    const raw = await getWithRetry<any>(`/project/${number}`);
-    return raw;
+    // Try singular first as some docs/environments expose /project/{number};
+    // fallback to plural /projects/{number} if the first path fails (e.g., 404).
+    try {
+        return await getWithRetry<any>(`/project/${number}`);
+    } catch (e: any) {
+        try {
+            return await getWithRetry<any>(`/projects/${number}`);
+        } catch {
+            throw e;
+        }
+    }
 }

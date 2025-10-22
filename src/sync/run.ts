@@ -156,10 +156,18 @@ export async function runSync() {
                         else { continue; }
                     }
                     const existing = await CustomerModel.findOne({ Code: c.Code }).lean();
-                    // Fetch full customer detail only if missing key fields or LastUpdatedDate changed
+                    // Fetch full customer detail only if missing any schema field (excluding operational fields) or LastUpdatedDate changed
                     let fullC: any = c;
                     try {
-                        const wanted = ['Addresses','DeliveryAddresses','CustomTextBoxes','CustomCheckBoxes','EnvelopeUrl'];
+                        const wanted = (() => {
+                            try {
+                                const schemaPaths = Object.keys((CustomerModel as any).schema?.paths ?? {});
+                                const skip = new Set<string>(['_id','__v','uuid','createdAt','updatedAt','deletedAt','lastSeenRun']);
+                                return schemaPaths.filter(k => !skip.has(k));
+                            } catch {
+                                return [] as string[];
+                            }
+                        })();
                         const incomingHasWanted = wanted.some(k => (c as any)[k] !== undefined);
                         const existingMissingWanted = wanted.some(k => !existing || (existing as any)[k] === undefined);
                         const parsedIncomingLU = c.LastUpdatedDate ? new Date(c.LastUpdatedDate) : undefined;
@@ -295,7 +303,17 @@ export async function runSync() {
                     // Enrich from detail if key fields are missing or LastUpdatedDate changed
                     let enriched = s as any;
                     try {
-                        const wanted = ['UsesDefaultPdfTheme','UsesDefaultPdftTheme','WithholdingTaxReferences','IsCISReverseCharge','ApplyWithholdingTax','IsVatRateEnabled','DefaultVatRate','VatExempt','DoesSupplierHasTransactionsInVATReturn','SourceName'];
+                        // Dynamically derive the desired fields from the Supplier schema so we don't drift.
+                        // We skip operational/managed fields that shouldn't trigger detail fetches by themselves.
+                        const wanted = (() => {
+                            try {
+                                const schemaPaths = Object.keys((SupplierModel as any).schema?.paths ?? {});
+                                const skip = new Set<string>(['_id','__v','uuid','createdAt','updatedAt','deletedAt','lastSeenRun']);
+                                return schemaPaths.filter(k => !skip.has(k));
+                            } catch {
+                                return [] as string[];
+                            }
+                        })();
                         const incomingHasWanted = wanted.some(k => enriched && enriched[k] !== undefined);
                         const existingMissingWanted = wanted.some(k => !existingSup || (existingSup as any)[k] === undefined);
                         const parsedIncomingLU = s.LastUpdatedDate ? new Date(s.LastUpdatedDate) : undefined;
@@ -314,7 +332,7 @@ export async function runSync() {
                         }
                     } catch {}
                     let updateSup = { ...enriched, LastUpdatedDate: enriched.LastUpdatedDate ? new Date(enriched.LastUpdatedDate) : undefined, updatedAt: new Date(), lastSeenRun: runIdSup } as any;
-                    updateSup = mergeNestedObjects(existingSup, updateSup, ['Currency', 'PaymentTerms', 'Address']);
+                    updateSup = mergeNestedObjects(existingSup, updateSup, ['Currency', 'PaymentTerms', 'Address', 'BankAccount']);
                     if (existingSup?.uuid) updateSup.uuid = (existingSup as any).uuid;
                     const { changedFields: changedFieldsSup, changes: changesSup } = diffDocs(existingSup, updateSup);
                     const res = await SupplierModel.updateOne(
@@ -366,6 +384,7 @@ export async function runSync() {
                 } else {
                     // No strong nextPageUrl from API? Continue by incrementing page numerically.
                     // If we eventually hit an empty page, the earlier check will wrap/finish accordingly.
+                    await sleep(100 + Math.floor(Math.random() * 200));
                     pageSup += 1;
                 }
                 if (loopedSup && pageSup >= initialPageSup) {
@@ -716,10 +735,23 @@ export async function runSync() {
                     if (p.Number && p.Number > newMaxPur) newMaxPur = p.Number;
                     if (!doFullRefreshIncrementals && p.Number && p.Number <= lastMaxPur) { reachedOldPur = true; continue; }
                     const existingPur = await PurchaseModel.findOne({ Number: p.Number }).lean();
-                    // Ensure LineItems populated: if not present but Permalink available, fetch detail
+                    // Ensure we have complete info: fetch detail if missing any schema field (excluding operational),
+                    // or if LineItems are missing but we have a Permalink/Number/Id to fetch from.
                     let fullP: any = p as any;
                     const hasLineItemsAlready = Array.isArray((p as any).LineItems) && (p as any).LineItems.length > 0;
-                    if (!hasLineItemsAlready) {
+                    let shouldFetchDetail = false;
+                    try {
+                        const wanted = (() => {
+                            try {
+                                const schemaPaths = Object.keys((PurchaseModel as any).schema?.paths ?? {});
+                                const skip = new Set<string>(['_id','__v','uuid','createdAt','updatedAt','deletedAt','lastSeenRun']);
+                                return schemaPaths.filter(k => !skip.has(k));
+                            } catch { return [] as string[]; }
+                        })();
+                        const existingMissing = wanted.some(k => !existingPur || (existingPur as any)[k] === undefined);
+                        shouldFetchDetail = existingMissing || !hasLineItemsAlready;
+                    } catch { /* ignore */ }
+                    if (shouldFetchDetail) {
                         purchasesNeedingDetail += 1;
                         const permalink = (p as any).Permalink;
                         let detail: any = null;
@@ -732,9 +764,12 @@ export async function runSync() {
                         if (!detail && (p as any).Id) {
                             try { detail = await fetchPurchaseDetailById((p as any).Id); if (detail) detailFromId += 1; } catch {/* ignore */}
                         }
-                        if (detail && Array.isArray(detail.LineItems) && detail.LineItems.length) {
-                            fullP = { ...p, LineItems: detail.LineItems, PaymentLines: detail.PaymentLines ?? (p as any).PaymentLines };
-                        } else if (config.flags.upsertLogs) {
+                        if (detail && typeof detail === 'object') {
+                            // Merge entire detail object to capture all fields, with special care to keep LineItems/PaymentLines
+                            const li = Array.isArray((detail as any).LineItems) && (detail as any).LineItems.length ? { LineItems: (detail as any).LineItems } : {};
+                            const pls = (detail as any).PaymentLines ? { PaymentLines: (detail as any).PaymentLines } : {};
+                            fullP = { ...p, ...detail, ...li, ...pls };
+                        } else if (!hasLineItemsAlready && config.flags.upsertLogs) {
                             logger.debug({ number: p.Number, id: (p as any).Id }, 'Purchase detail enrichment failed or no LineItems returned');
                         }
                     }

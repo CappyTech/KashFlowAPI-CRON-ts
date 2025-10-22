@@ -94,10 +94,10 @@ const supplierSchema = new mongoose.Schema(
         UniqueEntityNumber: String,
         WithholdingTaxRate: Number,
         WithholdingTaxReferences: mongoose.Schema.Types.Mixed,
-    // Additional fields seen in detail response
-    BankAccount: mongoose.Schema.Types.Mixed,
-    BilledNetAmount: Number,
-    BilledVatAmount: Number,
+        // Additional fields seen in detail response
+        BankAccount: mongoose.Schema.Types.Mixed,
+        BilledNetAmount: Number,
+        BilledVatAmount: Number,
         ...common,
     },
     { collection: 'suppliers', strict: false }
