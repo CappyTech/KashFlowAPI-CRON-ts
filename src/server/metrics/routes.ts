@@ -38,7 +38,8 @@ export async function handleTriggerSync(req: IncomingMessage, res: ServerRespons
   }
   const allowed = isLocalOrLan(remote) || !!config.metrics.allowRemoteTrigger;
   if (!allowed) { res.statusCode = 403; return res.end('Forbidden'); }
-  if (req.method !== 'POST') { res.statusCode = 405; return res.end('Method Not Allowed'); }
+  // Accept POST (preferred) and GET (compatibility) to trigger sync
+  if (req.method !== 'POST' && req.method !== 'GET') { res.statusCode = 405; return res.end('Method Not Allowed'); }
   const { inProgress } = getLastSummary();
   if (inProgress) { res.statusCode = 409; return res.end('Sync already in progress'); }
   runSync().catch(err => logger.error({ err }, 'Manual sync failed'));
