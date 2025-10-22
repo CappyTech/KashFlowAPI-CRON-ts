@@ -18,16 +18,18 @@ COPY src ./src
 # Build TypeScript -> dist (now safe since sources & tsconfig copied and scripts enabled)
 RUN npm run build
 
+# Prune dev dependencies so we can reuse node_modules in the runtime image without running npm there
+RUN npm prune --omit=dev && npm cache clean --force
+
 # Production/runtime image (only production dependencies)
 FROM node:20-alpine AS runtime
 WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Copy package.json & lock and install only production deps
-COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* ./
-# Install production deps only, ignoring lifecycle scripts (postinstall runs build which we already did)
-RUN if [ -f package-lock.json ]; then npm ci --omit=dev --ignore-scripts; else npm install --omit=dev --ignore-scripts; fi && npm cache clean --force
+# Reuse pruned production node_modules from build stage to avoid running npm under QEMU for arm64
+COPY --from=build /app/node_modules ./node_modules
+COPY package.json ./
 
 # Copy compiled output from build stage
 COPY --from=build /app/dist ./dist
