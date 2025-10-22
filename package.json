@@ -1,6 +1,6 @@
 {
   "name": "kashflowapi-cron",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "KashFlow REST to MongoDB hourly sync via SSH tunnel (TypeScript)",
   "type": "module",
   "main": "dist/index.js",

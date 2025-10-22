@@ -64,15 +64,25 @@ const supplierSchema = new mongoose.Schema(
         TotalPaidAmount: Number,
         DefaultNominalCode: Number,
         VATNumber: String,
+        // Some APIs expose a differently cased field as well
+        VatNumber: String,
         IsRegisteredInEC: Boolean,
         IsArchived: Boolean,
-    // REST can return string values like "Domestic"; normalize to string
-    TradeBorderType: { type: String, set: (v: unknown) => (v == null ? (v as any) : String(v)) },
+        // REST can return string values like "Domestic"; normalize to string
+        TradeBorderType: { type: String, set: (v: unknown) => (v == null ? (v as any) : String(v)) },
         PaymentTerms: mongoose.Schema.Types.Mixed,
         Currency: mongoose.Schema.Types.Mixed,
         Contacts: [mongoose.Schema.Types.Mixed],
         Address: mongoose.Schema.Types.Mixed,
         DeliveryAddresses: [mongoose.Schema.Types.Mixed],
+        // Additional fields requested
+        DefaultPdfTheme: Number,
+        PaymentMethod: Number,
+        CreateSupplierCodeIfDuplicate: Boolean,
+        CreateSupplierNameIfEmptyOrNull: Boolean,
+        UniqueEntityNumber: String,
+        WithholdingTaxRate: Number,
+        WithholdingTaxReferences: mongoose.Schema.Types.Mixed,
         ...common,
     },
     { collection: 'suppliers', strict: false }
