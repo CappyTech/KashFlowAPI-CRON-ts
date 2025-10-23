@@ -95,8 +95,8 @@ export function startMetricsServer() {
       .progress { color: #f0ad4e; }
   .sync-active-badge { display:inline-block; margin-left:.5rem; padding:2px 6px; font-size:.55rem; letter-spacing:.5px; background:#f0ad4e; color:#000; border-radius:4px; font-weight:600; animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 0%{opacity:1;} 50%{opacity:.35;} 100%{opacity:1;} }
-      button { background: #1d2229; color: #eee; border: 1px solid #333; padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: .75rem; }
-      button:hover { background: #242a32; }
+  .linkBtn { display:inline-block; background: #1d2229; color: #eee; border: 1px solid #333; padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: .75rem; }
+  .linkBtn:hover { background: #242a32; text-decoration: none; }
       code { background: #181c22; padding: 2px 4px; border-radius: 4px; }
       a { color: #6cc6ff; text-decoration: none; }
       a:hover { text-decoration: underline; }
@@ -105,15 +105,14 @@ export function startMetricsServer() {
   <body>
     ${h1('KashFlow Sync Dashboard')}
     <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:.5rem;">
-      <button type="button" id="triggerBtn">Trigger Sync</button>
-      <button type="button" id="historyBtn">Show History</button>
-      <button type="button" class="navBtn" data-link="/upserts">Upserts</button>
-      <button type="button" class="navBtn" data-link="/sync-summary">Latest Summary</button>
-      <button type="button" class="navBtn" data-link="/summaries">All Summaries</button>
-      <button type="button" class="navBtn" data-link="/timers">Timers</button>
-      <button type="button" class="navBtn" data-link="/logs">Logs</button>
-      <button type="button" class="navBtn" data-link="/logs?format=json">Logs JSON</button>
-      <span id="triggerResult" style="align-self:center;font-size:.75rem;"></span>
+      <a class="linkBtn" id="triggerLink" href="/trigger-sync">Trigger Sync</a>
+      <a class="linkBtn" id="historyLink" href="/summaries">Show History</a>
+      <a class="linkBtn" href="/upserts">Upserts</a>
+      <a class="linkBtn" href="/sync-summary">Latest Summary</a>
+      <a class="linkBtn" href="/summaries">All Summaries</a>
+      <a class="linkBtn" href="/timers">Timers</a>
+      <a class="linkBtn" href="/logs">Logs</a>
+      <a class="linkBtn" href="/logs?format=json">Logs JSON</a>
     </div>
   <div id="status">Loading...</div>
   <div id="syncIndicator" style="display:none;margin-top:.25rem;"><span class="sync-active-badge">SYNC IN PROGRESS</span></div>
@@ -142,10 +141,10 @@ export function startMetricsServer() {
     <div id="miniLogs" style="margin-top:1rem;">
       <h2 style="margin:0 0 .4rem;font-size:1rem;">Live Logs <small id="miniStatus" style="opacity:.7"></small></h2>
       <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.4rem;">
-        <button type="button" id="miniShowBtn">Show</button>
-        <button type="button" id="miniPauseBtn">Pause</button>
-        <button type="button" id="miniClearBtn">Clear</button>
-        <button type="button" id="miniDownloadBtn">Download Tail</button>
+        <a href="#" class="linkBtn" id="miniShowBtn">Show</a>
+        <a href="#" class="linkBtn" id="miniPauseBtn">Pause</a>
+        <a href="#" class="linkBtn" id="miniClearBtn">Clear</a>
+        <a href="/logs?format=json" class="linkBtn" id="miniDownloadBtn" download>Download Tail</a>
       </div>
       <pre id="miniLog" style="display:none;max-height:240px;overflow:auto;background:#181c22;padding:6px;border-radius:4px;"></pre>
     </div>
@@ -156,9 +155,8 @@ export function startMetricsServer() {
       const statusEl = document.getElementById('status');
       const entitiesTable = document.getElementById('entities');
       const legendEl = document.getElementById('legend');
-      const triggerBtn = document.getElementById('triggerBtn');
-      const triggerResult = document.getElementById('triggerResult');
-      const historyBtn = document.getElementById('historyBtn');
+  const triggerLink = document.getElementById('triggerLink');
+  const historyLink = document.getElementById('historyLink');
       const historyDiv = document.getElementById('history');
       const historyTableBody = document.querySelector('#historyTable tbody');
       const nextCronEl = document.getElementById('nextCron');
@@ -265,19 +263,15 @@ export function startMetricsServer() {
         } catch {}
       }
 
-  historyBtn.addEventListener('click', async () => {
-        const show = historyDiv.style.display === 'none';
-        historyDiv.style.display = show ? 'block':'none';
-        historyBtn.textContent = show ? 'Hide History':'Show History';
-        if (show) await loadHistory();
-      });
-
-  triggerBtn.addEventListener('click', async () => {
-        triggerBtn.disabled = true; const prev = triggerBtn.textContent; triggerBtn.textContent='Triggering...'; triggerResult.textContent='';
-        try { const r = await fetch('/trigger-sync',{method:'POST'}); const txt = await r.text(); triggerResult.style.color = r.ok?'#6cc644':'#ff5555'; triggerResult.textContent = (r.ok?'OK ':'FAIL ')+txt; }
-        catch(e){ triggerResult.style.color='#ff5555'; triggerResult.textContent='Error '+e.message; }
-        finally { triggerBtn.disabled=false; triggerBtn.textContent=prev; setTimeout(()=>triggerResult.textContent='', 15000); }
-      });
+  if (historyLink) {
+        historyLink.addEventListener('click', async (ev) => {
+          ev.preventDefault();
+          const show = historyDiv.style.display === 'none';
+          historyDiv.style.display = show ? 'block':'none';
+          historyLink.textContent = show ? 'Hide History':'Show History';
+          if (show) await loadHistory();
+        });
+      }
 
   function ensureMiniStream(){
         if (miniEventSource) return;
@@ -311,7 +305,7 @@ export function startMetricsServer() {
         miniLogEl.scrollTop = miniLogEl.scrollHeight;
         miniSetStatus();
       }
-  miniShowBtn.addEventListener('click', async () => {
+  miniShowBtn.addEventListener('click', async (ev) => { ev.preventDefault();
         miniVisible = !miniVisible;
         miniLogEl.style.display = miniVisible ? 'block':'none';
         miniShowBtn.textContent = miniVisible ? 'Hide':'Show';
@@ -321,15 +315,8 @@ export function startMetricsServer() {
           ensureMiniStream();
         }
       });
-  miniPauseBtn.addEventListener('click', () => { miniPaused = !miniPaused; miniPauseBtn.textContent = miniPaused ? 'Resume':'Pause'; miniSetStatus(); });
-  miniClearBtn.addEventListener('click', () => { miniLogEl.textContent=''; miniCount=0; miniSetStatus(); });
-  miniDownloadBtn.addEventListener('click', async () => {
-        try {
-          const list = await fetchJson('/logs?format=json');
-          const blob = new Blob([JSON.stringify(list,null,2)],{type:'application/json'});
-          const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download='logs-tail.json'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
-        } catch(e){ /* ignore */ }
-      });
+  miniPauseBtn.addEventListener('click', (ev) => { ev.preventDefault(); miniPaused = !miniPaused; miniPauseBtn.textContent = miniPaused ? 'Resume':'Pause'; miniSetStatus(); });
+  miniClearBtn.addEventListener('click', (ev) => { ev.preventDefault(); miniLogEl.textContent=''; miniCount=0; miniSetStatus(); });
   miniSetStatus();
 
       // Navigation buttons

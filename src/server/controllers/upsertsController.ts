@@ -48,7 +48,7 @@ export async function handleUpserts(req: IncomingMessage, res: ServerResponse, a
       <label>Key <input type="text" name="key" value="${key || ''}" /></label>
       <label>Since <input type="text" name="since" placeholder="YYYY-MM-DD" value="${since ? since.toISOString().slice(0,10) : ''}" /></label>
       <label>Limit <input type="number" min="1" max="500" name="limit" value="${limit}" /></label>
-      <button type="submit">Apply</button>
+      <a href="#" onclick="this.closest('form').submit();return false;" class="linkBtn">Apply</a>
     </form>
     <table>
       <thead><tr><th>When</th><th>Entity</th><th>Key</th><th>Op</th><th>Changed</th></tr></thead>
