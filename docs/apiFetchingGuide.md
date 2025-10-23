@@ -22,6 +22,7 @@ A concise, agent-friendly reference for fetching and syncing data from the KashF
   * Invoices → `Number`
   * Projects → `Number`
   * Purchases → `Number`
+  * Nominals → `Code`
 
 ---
 
@@ -71,6 +72,14 @@ A concise, agent-friendly reference for fetching and syncing data from the KashF
   *(summaries; some flags only present in single)*
 * **Single**: `GET /suppliers/{code}`
   → `Supplier` *(full: VAT/CIS/WHT flags, PDF theme flags, bank account, billed amounts, etc.)*
+
+### Nominals
+
+* **List**: `GET /nominals?...`
+  → `{ Data: Nominal[], MetaData }` or a plain array depending on tenant
+  *(objects usually include full fields in the list payload)*
+* **Single**: `GET /nominals/{id}` (optional; not always needed if list is full)
+  → `Nominal` *(full account details)*
 
 ---
 

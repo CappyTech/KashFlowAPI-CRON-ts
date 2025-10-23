@@ -8,7 +8,8 @@ import { fetchPurchases, fetchPurchaseDetailByPermalink, fetchPurchaseDetailById
 import { fetchInvoices, fetchInvoiceDetailByNumber } from './fetchers/invoices.js';
 import { fetchQuotes, fetchQuoteDetailByNumber } from './fetchers/quotes.js';
 import { fetchProjects, fetchProjectDetailByNumber } from './fetchers/projects.js';
-import { CustomerModel, SupplierModel, PurchaseModel, InvoiceModel, QuoteModel, ProjectModel, UpsertLogModel } from '../db/models.js';
+import { fetchNominals } from './fetchers/nominals.js';
+import { CustomerModel, SupplierModel, PurchaseModel, InvoiceModel, QuoteModel, ProjectModel, NominalModel, UpsertLogModel } from '../db/models.js';
 import { findDocumentByPurchaseNumber } from '../integrations/paperless.js';
 import { markSyncStart, setLastSummary, EntitySummaryBase } from './summary.js';
 import { SyncSummaryModel } from '../db/models.js';
@@ -750,6 +751,60 @@ export async function runSync() {
             const pjMs = Date.now() - pjStart;
             logger.info({ pages: pagesPj, fetched: fetchedPj, upserted: upsertedPj, total: totalPj, lastMax: lastMaxPj, newMax: newMaxPj, reachedOld: reachedOldPj, stoppedReason: stoppedReasonPj, unpaged: unpagedPj, softDeleted: softDeletedPj, fullRefresh: doFullRefreshIncrementals, detailOk: detailOkPj, detailFail: detailFailPj, ms: pjMs }, 'Projects sync completed (incremental)');
             entities.push({ entity: 'projects', pages: pagesPj, fetched: fetchedPj, upserted: upsertedPj, total: totalPj, lastMax: lastMaxPj, newMax: newMaxPj, reachedOld: reachedOldPj, stoppedReason: stoppedReasonPj, unpaged: unpagedPj, softDeleted: softDeletedPj, fullRefresh: doFullRefreshIncrementals, ms: pjMs });
+            
+            // === Nominals Sync ===
+            // Full traversal by pages; list payloads are typically full objects
+            const nomStart = Date.now();
+            const runIdNom = new Date().toISOString();
+            let pageNom = 1;
+            let nextUrlNom: string | undefined = undefined;
+            const perpageNom = 250;
+            let fetchedNom = 0;
+            let totalNom = 0;
+            let upsertedNom = 0;
+            let pagesNom = 0;
+            let completedFullNom = false;
+            while (true) {
+                const res = await fetchNominals(pageNom, perpageNom, nextUrlNom);
+                const items = res.items || [];
+                pagesNom += 1;
+                fetchedNom += items.length;
+                totalNom = res.total || totalNom;
+                for (const n of items) {
+                    const existingNom = await NominalModel.findOne({ Code: n.Code }).lean();
+                    // Build update doc; parse numeric-ish fields are already numbers per API
+                    const updateNom: any = { ...n, updatedAt: new Date(), lastSeenRun: runIdNom };
+                    if (existingNom?.uuid) updateNom.uuid = (existingNom as any).uuid;
+                    const { changedFields, changes } = diffDocs(existingNom, updateNom);
+                    const resUp = await NominalModel.updateOne(
+                        { Code: n.Code },
+                        { $set: updateNom, $setOnInsert: { createdAt: new Date(), deletedAt: null } },
+                        { upsert: true, setDefaultsOnInsert: true }
+                    );
+                    const rUp = resUp as unknown as UpdateResultLike;
+                    const wasInserted = rUp?.upsertedCount === 1 || !!(rUp as any).upsertedId;
+                    if (wasInserted || resUp.modifiedCount) upsertedNom += 1;
+                    if (config.flags.upsertLogs && (wasInserted || changedFields.length > 0)) {
+                        try { await UpsertLogModel.create({ entity: 'nominals', key: String(n.Code), op: wasInserted ? 'insert' : 'update', runId: runIdNom, modifiedCount: (resUp as any).modifiedCount, upsertedId: (resUp as any).upsertedId, changedFields, changes }); } catch {}
+                    }
+                }
+                if (!res.nextPageUrl && items.length < perpageNom) { completedFullNom = true; break; }
+                if (res.nextPageUrl) { nextUrlNom = res.nextPageUrl; await sleep(100 + Math.floor(Math.random() * 200)); }
+                pageNom += 1;
+            }
+            // Soft delete nominals after a full traversal
+            let softDeletedNom = 0;
+            if (completedFullNom && config.flags.incrementalSoftDelete) {
+                const resSD = await NominalModel.updateMany(
+                    { $or: [{ lastSeenRun: { $ne: runIdNom } }, { lastSeenRun: { $exists: false } }], deletedAt: null },
+                    { $set: { deletedAt: new Date(), updatedAt: new Date() } }
+                );
+                const rNomSD = resSD as unknown as UpdateResultLike;
+                softDeletedNom = (rNomSD && (rNomSD.modifiedCount ?? 0)) as number;
+            }
+            const nomMs = Date.now() - nomStart;
+            logger.info({ pages: pagesNom, fetched: fetchedNom, upserted: upsertedNom, total: totalNom, softDeleted: softDeletedNom, ms: nomMs }, 'Nominals sync completed');
+            entities.push({ entity: 'nominals', pages: pagesNom, fetched: fetchedNom, upserted: upsertedNom, total: totalNom, softDeleted: softDeletedNom, ms: nomMs });
             
             // === Purchases Sync (LAST) ===
             // Incremental by max Number, paged

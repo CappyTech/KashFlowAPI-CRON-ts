@@ -105,6 +105,46 @@ const supplierSchema = new mongoose.Schema(
 supplierSchema.index({ Code: 1 }, { unique: true });
 export const SupplierModel = mongoose.model('Supplier', supplierSchema);
 
+// Nominal accounts (Chart of Accounts)
+const nominalSchema = new mongoose.Schema(
+    {
+        uuid: { type: String, unique: true, required: true, default: uuidv4 },
+        Id: Number,
+        Code: Number,
+        Name: String,
+        Type: { type: String, set: (v: unknown) => (v == null ? (v as any) : String(v)) },
+        NomType: Number,
+        Sa103Code: Number,
+        DefaultProduct: mongoose.Schema.Types.Mixed,
+        Disallowed: Boolean,
+        ComplianceCode: String,
+        Archived: Boolean,
+        DigitalService: Boolean,
+        IsProduct: Number,
+        AutoFillLineItem: Boolean,
+        Price: Number,
+        WholeSalePrice: Number,
+        VATRate: Number,
+        VATExempt: Boolean,
+        Description: String,
+        Special: Number,
+        Classification: String,
+        ControlAccountClassification: String,
+        AllowDelete: Boolean,
+        PlOption: Number,
+        BsOption: Number,
+        IRISCoAName: String,
+        IsIRISCoA: Boolean,
+        ManageStockLevel: Boolean,
+        QuantityInStock: Number,
+        StockWarningQuantity: Number,
+        ...common,
+    },
+    { collection: 'nominals', strict: false }
+);
+nominalSchema.index({ Code: 1 }, { unique: true });
+export const NominalModel = mongoose.model('Nominal', nominalSchema);
+
 const invoiceSchema = new mongoose.Schema(
     {
         uuid: { type: String, unique: true, required: true, default: uuidv4 },
