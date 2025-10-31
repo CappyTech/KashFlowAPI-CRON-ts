@@ -1,9 +1,9 @@
 services:
   app:
-    image: ghcr.io/CappyTech/kashflowapi-cron-ts:latest
+    image: ghcr.io/CappyTech/hcs-sync:latest
     pull_policy: always   # remove if your compose version doesn't support
     restart: unless-stopped
-    container_name: heroncs-sync
+    container_name: hcs-sync
     env_file:
       - compose.env
     ports:
